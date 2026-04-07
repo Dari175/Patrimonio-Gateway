@@ -2,7 +2,6 @@ const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const cors = require('cors');
 
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -40,7 +39,7 @@ const warmUpServices = async () => {
 
   await Promise.allSettled(
     Object.values(SERVICES).map(url =>
-      fetch(`${url}/health`).catch(() => null) //
+      fetch(`${url}/health`).catch(() => null)
     )
   );
 
@@ -82,6 +81,55 @@ app.use(async (req, res, next) => {
   }
 
   next();
+});
+
+
+// =============================
+// 🔥 LOGIN MANUAL (FIX CLAVE)
+// =============================
+app.post('/auth/login', async (req, res) => {
+  try {
+    const url = SERVICES.auth + '/login';
+
+    let response;
+
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(req.headers.authorization && {
+            Authorization: req.headers.authorization
+          })
+        },
+        body: JSON.stringify(req.body)
+      });
+    } catch (err) {
+      console.log('[LOGIN RETRY] Servicio dormido, despertando...');
+
+      await fetch(SERVICES.auth + '/health').catch(() => null);
+
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(req.headers.authorization && {
+            Authorization: req.headers.authorization
+          })
+        },
+        body: JSON.stringify(req.body)
+      });
+    }
+
+    const data = await response.text();
+
+    res.status(response.status).send(data);
+
+  } catch (error) {
+    res.status(502).json({
+      error: 'Error en login'
+    });
+  }
 });
 
 
@@ -139,7 +187,7 @@ const createSafeProxy = (config) => {
 
         const data = await retryRes.text();
 
-        res.removeHeader('content-length'); // 🔥 clave
+        res.removeHeader('content-length');
         res.status(retryRes.status).send(data);
 
       } catch (retryErr) {
@@ -157,7 +205,7 @@ const createSafeProxy = (config) => {
 
 
 // =============================
-// AUTH SERVICE
+// AUTH SERVICE (NO SE TOCA)
 // =============================
 app.use('/auth', createSafeProxy({
   target: SERVICES.auth,
