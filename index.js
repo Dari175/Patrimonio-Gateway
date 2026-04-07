@@ -85,7 +85,7 @@ app.use(async (req, res, next) => {
 
 
 // =============================
-// 🔥 LOGIN MANUAL (FIX CLAVE)
+//  LOGIN MANUAL 
 // =============================
 app.post('/auth/login', async (req, res) => {
   try {
@@ -121,9 +121,9 @@ app.post('/auth/login', async (req, res) => {
       });
     }
 
-    const data = await response.text();
+    const data = await response.json(); 
 
-    res.status(response.status).send(data);
+    res.status(response.status).json(data); 
 
   } catch (error) {
     res.status(502).json({
