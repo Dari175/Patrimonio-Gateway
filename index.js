@@ -1,6 +1,7 @@
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const cors = require('cors');
+const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -15,20 +16,133 @@ app.use((req, res, next) => {
   next();
 });
 
-// =============================
-// 🔐 AUTH SERVICE
-// =============================
-app.use('/auth', createProxyMiddleware({
-  //localhost:5000 es el auth service
-  //target: 'http://localhost:5000',
-  //Proxy para producción
-  target: 'https://patrimonio-apiservice-auth.onrender.com',
-  changeOrigin: true,
 
+// =============================
+// CONFIGURACION GLOBAL
+// =============================
+const SERVICES = {
+  auth: 'https://patrimonio-apiservice-auth.onrender.com',
+  upload: 'https://patrimonio-loadimages.onrender.com',
+  bienes: 'https://bienes-service-nldc.onrender.com',
+  importador: 'https://patrimonio-importexeldb.onrender.com'
+};
+
+let servicesWarmed = false;
+let lastWarmTime = 0;
+
+
+// =============================
+// FUNCION DE WARM-UP
+// =============================
+const warmUpServices = async () => {
+  console.log('[WARMUP] Iniciando calentamiento de servicios');
+
+  await Promise.allSettled(
+    Object.values(SERVICES).map(url =>
+      fetch(`${url}/health`, { timeout: 8000 }).catch(() => null)
+    )
+  );
+
+  console.log('[WARMUP] Servicios despertados');
+};
+
+
+// =============================
+// RETRY INTELIGENTE
+// =============================
+const retryRequest = async (url, options, retries = 1) => {
+  try {
+    return await fetch(url, options);
+  } catch (err) {
+    if (retries <= 0) throw err;
+
+    console.log('[RETRY] Intentando despertar servicio:', url);
+
+    try {
+      await fetch(url.replace(/\/[^/]+$/, '/health'));
+    } catch (_) {}
+
+    return retryRequest(url, options, retries - 1);
+  }
+};
+
+
+// =============================
+// MIDDLEWARE GLOBAL WARM-UP
+// =============================
+app.use(async (req, res, next) => {
+  const now = Date.now();
+
+  if (!servicesWarmed || now - lastWarmTime > 5 * 60 * 1000) {
+    servicesWarmed = true;
+    lastWarmTime = now;
+
+    await warmUpServices();
+  }
+
+  next();
+});
+
+
+// =============================
+// PROXY CON MANEJO DE ERROR
+// =============================
+const createSafeProxy = (config) => {
+  return createProxyMiddleware({
+    ...config,
+    proxyTimeout: 20000,
+    timeout: 20000,
+
+    onError: async (err, req, res) => {
+      console.log('[PROXY ERROR]', err.code);
+
+      try {
+        const target = config.target;
+
+        console.log('[RECOVERY] Despertando servicio:', target);
+
+        await fetch(`${target}/health`).catch(() => null);
+
+        const retryUrl = target + req.originalUrl;
+
+        const retryRes = await retryRequest(retryUrl, {
+          method: req.method,
+          headers: {
+            'Content-Type': 'application/json',
+            ...(req.headers.authorization && {
+              Authorization: req.headers.authorization
+            })
+          },
+          body: ['GET', 'HEAD'].includes(req.method)
+            ? undefined
+            : JSON.stringify(req.body)
+        });
+
+        const data = await retryRes.text();
+
+        res.status(retryRes.status).send(data);
+
+      } catch (retryErr) {
+        console.log('[FATAL] No se pudo recuperar el servicio');
+
+        res.status(502).json({
+          error: 'Servicio temporalmente no disponible'
+        });
+      }
+    }
+  });
+};
+
+
+// =============================
+// AUTH SERVICE
+// =============================
+app.use('/auth', createSafeProxy({
+  target: SERVICES.auth,
+  changeOrigin: true,
   pathRewrite: {
     '^/auth': '/'
   },
-
   onProxyReq: (proxyReq, req) => {
     proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
 
@@ -38,75 +152,65 @@ app.use('/auth', createProxyMiddleware({
   }
 }));
 
+
 // =============================
-// 👥 ROLES
+// ROLES
 // =============================
 app.use('/roles',
   (req, res, next) => {
-    req.headers['x-module'] = 'roles'; //
+    req.headers['x-module'] = 'roles';
     next();
   },
-  createProxyMiddleware({
-   //localhost:5000 es el auth service
-  //target: 'http://localhost:5000',
-  //Proxy para producción
-  target: 'https://patrimonio-apiservice-auth.onrender.com',
+  createSafeProxy({
+    target: SERVICES.auth,
     changeOrigin: true,
     pathRewrite: { '^/roles': '/' }
   })
 );
 
+
 // =============================
-// 👤 USUARIOS
+// USUARIOS
 // =============================
 app.use('/usuarios',
   (req, res, next) => {
-    req.headers['x-module'] = 'usuarios'; //
+    req.headers['x-module'] = 'usuarios';
     next();
   },
-  createProxyMiddleware({
-  target: 'https://patrimonio-apiservice-auth.onrender.com',
+  createSafeProxy({
+    target: SERVICES.auth,
     changeOrigin: true,
     pathRewrite: { '^/usuarios': '/' }
   })
 );
 
+
 // =============================
-// 📦 UPLOAD SERVICE
+// UPLOAD SERVICE
 // =============================
-app.use('/api/upload', createProxyMiddleware({
-  //localhost:6000 es el upload service
-  //target: 'http://localhost:6000',
-  //Proxy para producción
-  target: 'https://patrimonio-loadimages.onrender.com',
+app.use('/api/upload', createSafeProxy({
+  target: SERVICES.upload,
   changeOrigin: true,
-
   pathRewrite: (path) => '/api/upload' + path,
+  onProxyReq: (proxyReq, req) => {
+    proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
 
- onProxyReq: (proxyReq, req) => {
-  proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
+    if (req.headers.authorization) {
+      proxyReq.setHeader('Authorization', req.headers.authorization);
+    }
 
-  if (req.headers.authorization) {
-    proxyReq.setHeader('Authorization', req.headers.authorization);
-  }
-
-  proxyReq.setHeader('x-module', 'roles'); // o usuarios
-
+    proxyReq.setHeader('x-module', 'roles');
   }
 }));
 
+
 // =============================
-// 🧠 BIENES SERVICE (AISLADO)
+// BIENES SERVICE
 // =============================
-app.use('/bienes', createProxyMiddleware({
-  //localhost:3001 es el bienes service
-  //target: 'http://localhost:3001', 
-  //Proxy para producción
-  target: 'https://bienes-service-nldc.onrender.com',
+app.use('/bienes', createSafeProxy({
+  target: SERVICES.bienes,
   changeOrigin: true,
-
   pathRewrite: (path) => '/api' + path,
-
   onProxyReq: (proxyReq, req) => {
     proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
 
@@ -116,26 +220,24 @@ app.use('/bienes', createProxyMiddleware({
   }
 }));
 
+
 // =============================
-// ❤️ HEALTH
+// HEALTH
 // =============================
 app.get('/health', (req, res) => {
   res.json({ ok: true });
 });
-// =============================
-// 📊 IMPORTADOR SERVICE (PYTHON)
-// =============================
-app.use('/importador', createProxyMiddleware({
-  //localhost:8000 es el importador service
-  //target: 'http://127.0.0.1:8000/importar',
-  //Proxy para producción
-  target: 'https://patrimonio-importexeldb.onrender.com/importar',
-  changeOrigin: true,
 
+
+// =============================
+// IMPORTADOR SERVICE
+// =============================
+app.use('/importador', createSafeProxy({
+  target: SERVICES.importador + '/importar',
+  changeOrigin: true,
   pathRewrite: {
     '^/importador': ''
   },
-
   onProxyReq: (proxyReq, req) => {
     proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
 
@@ -148,10 +250,11 @@ app.use('/importador', createProxyMiddleware({
 }));
 
 app.use('/importador', (req, res, next) => {
-  console.log("👉 PATH ORIGINAL:", req.url);
+  console.log("PATH ORIGINAL:", req.url);
   next();
 });
 
+
 app.listen(PORT, () => {
-  console.log(`🚀 Gateway corriendo en http://localhost:${PORT}`);
+  console.log(`Gateway corriendo en puerto ${PORT}`);
 });
