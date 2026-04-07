@@ -97,6 +97,8 @@ const createSafeProxy = (config) => {
     onError: async (err, req, res) => {
       console.log('[PROXY ERROR]', err.code);
 
+      if (res.headersSent) return;
+
       try {
         const target = config.target;
 
@@ -106,7 +108,6 @@ const createSafeProxy = (config) => {
 
         let rewrittenPath = req.originalUrl;
 
-        // replicar exactamente tu pathRewrite SIN cambiar tu lógica
         if (req.originalUrl.startsWith('/auth')) {
           rewrittenPath = req.originalUrl.replace('/auth', '');
         } else if (req.originalUrl.startsWith('/roles')) {
@@ -117,12 +118,11 @@ const createSafeProxy = (config) => {
           rewrittenPath = req.originalUrl.replace('/importador', '');
         }
 
-        // IMPORTANTE: evitar doble slash
         if (!rewrittenPath.startsWith('/')) {
           rewrittenPath = '/' + rewrittenPath;
         }
 
-const retryUrl = target + rewrittenPath;
+        const retryUrl = target + rewrittenPath;
 
         const retryRes = await retryRequest(retryUrl, {
           method: req.method,
@@ -139,14 +139,17 @@ const retryUrl = target + rewrittenPath;
 
         const data = await retryRes.text();
 
+        res.removeHeader('content-length'); // 🔥 clave
         res.status(retryRes.status).send(data);
 
       } catch (retryErr) {
         console.log('[FATAL] No se pudo recuperar el servicio');
 
-        res.status(502).json({
-          error: 'Servicio temporalmente no disponible'
-        });
+        if (!res.headersSent) {
+          res.status(502).json({
+            error: 'Servicio temporalmente no disponible'
+          });
+        }
       }
     }
   });
