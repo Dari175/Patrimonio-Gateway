@@ -5,7 +5,7 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json()); 
+app.use(express.json());
 app.use(cors({
   origin: true,
   credentials: true
@@ -27,65 +27,9 @@ const SERVICES = {
   importador: 'https://patrimonio-importexeldb.onrender.com'
 };
 
-let servicesWarmed = false;
-let lastWarmTime = 0;
-
 
 // =============================
-// FUNCION DE WARM-UP
-// =============================
-const warmUpServices = async () => {
-  console.log('[WARMUP] Iniciando calentamiento de servicios');
-
-  await Promise.allSettled(
-    Object.values(SERVICES).map(url =>
-      fetch(`${url}/health`).catch(() => null)
-    )
-  );
-
-  console.log('[WARMUP] Servicios despertados');
-};
-
-
-// =============================
-// RETRY INTELIGENTE
-// =============================
-const retryRequest = async (url, options, retries = 1) => {
-  try {
-    return await fetch(url, options);
-  } catch (err) {
-    if (retries <= 0) throw err;
-
-    console.log('[RETRY] Intentando despertar servicio:', url);
-
-    try {
-      await fetch(url.replace(/\/[^/]+$/, '/health'));
-    } catch (_) {}
-
-    return retryRequest(url, options, retries - 1);
-  }
-};
-
-
-// =============================
-// MIDDLEWARE GLOBAL WARM-UP
-// =============================
-app.use(async (req, res, next) => {
-  const now = Date.now();
-
-  if (!servicesWarmed || now - lastWarmTime > 5 * 60 * 1000) {
-    servicesWarmed = true;
-    lastWarmTime = now;
-
-    await warmUpServices();
-  }
-
-  next();
-});
-
-
-// =============================
-//  LOGIN MANUAL 
+// LOGIN MANUAL (CONTROL TOTAL)
 // =============================
 app.post('/auth/login', async (req, res) => {
   try {
@@ -107,6 +51,7 @@ app.post('/auth/login', async (req, res) => {
     } catch (err) {
       console.log('[LOGIN RETRY] Servicio dormido, despertando...');
 
+      // despertar solo si falla
       await fetch(SERVICES.auth + '/health').catch(() => null);
 
       response = await fetch(url, {
@@ -121,9 +66,8 @@ app.post('/auth/login', async (req, res) => {
       });
     }
 
-    const data = await response.json(); 
-
-    res.status(response.status).json(data); 
+    const data = await response.json();
+    res.status(response.status).json(data);
 
   } catch (error) {
     res.status(502).json({
@@ -134,7 +78,7 @@ app.post('/auth/login', async (req, res) => {
 
 
 // =============================
-// PROXY CON MANEJO DE ERROR
+// PROXY SEGURO (SIN MULTIPLICAR REQUESTS)
 // =============================
 const createSafeProxy = (config) => {
   return createProxyMiddleware({
@@ -146,6 +90,14 @@ const createSafeProxy = (config) => {
       console.log('[PROXY ERROR]', err.code);
 
       if (res.headersSent) return;
+
+      // 🔥 IMPORTANTE:
+      // NO hacer retry en GET (evita 429)
+      if (req.method === 'GET') {
+        return res.status(502).json({
+          error: 'Servicio temporalmente no disponible'
+        });
+      }
 
       try {
         const target = config.target;
@@ -172,7 +124,7 @@ const createSafeProxy = (config) => {
 
         const retryUrl = target + rewrittenPath;
 
-        const retryRes = await retryRequest(retryUrl, {
+        const retryRes = await fetch(retryUrl, {
           method: req.method,
           headers: {
             'Content-Type': 'application/json',
@@ -205,7 +157,7 @@ const createSafeProxy = (config) => {
 
 
 // =============================
-// AUTH SERVICE (NO SE TOCA)
+// AUTH SERVICE
 // =============================
 app.use('/auth', createSafeProxy({
   target: SERVICES.auth,
@@ -275,12 +227,14 @@ app.use('/api/upload', createSafeProxy({
 
 
 // =============================
-// BIENES SERVICE
-// =============================
-app.use('/bienes', createSafeProxy({
+// BIENES SERVICE (SIN RETRY)
+/// =============================
+app.use('/bienes', createProxyMiddleware({
   target: SERVICES.bienes,
   changeOrigin: true,
   pathRewrite: (path) => '/api' + path,
+  proxyTimeout: 20000,
+  timeout: 20000,
   onProxyReq: (proxyReq, req) => {
     proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
 
