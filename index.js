@@ -40,7 +40,7 @@ const warmUpServices = async () => {
 
   await Promise.allSettled(
     Object.values(SERVICES).map(url =>
-      fetch(`${url}/health`).catch(() => null) // 🔥 sin timeout (node native)
+      fetch(`${url}/health`).catch(() => null) //
     )
   );
 
@@ -104,7 +104,25 @@ const createSafeProxy = (config) => {
 
         await fetch(`${target}/health`).catch(() => null);
 
-        const retryUrl = target + req.originalUrl;
+        let rewrittenPath = req.originalUrl;
+
+        // replicar exactamente tu pathRewrite SIN cambiar tu lógica
+        if (req.originalUrl.startsWith('/auth')) {
+          rewrittenPath = req.originalUrl.replace('/auth', '');
+        } else if (req.originalUrl.startsWith('/roles')) {
+          rewrittenPath = req.originalUrl.replace('/roles', '');
+        } else if (req.originalUrl.startsWith('/usuarios')) {
+          rewrittenPath = req.originalUrl.replace('/usuarios', '');
+        } else if (req.originalUrl.startsWith('/importador')) {
+          rewrittenPath = req.originalUrl.replace('/importador', '');
+        }
+
+        // IMPORTANTE: evitar doble slash
+        if (!rewrittenPath.startsWith('/')) {
+          rewrittenPath = '/' + rewrittenPath;
+        }
+
+const retryUrl = target + rewrittenPath;
 
         const retryRes = await retryRequest(retryUrl, {
           method: req.method,
