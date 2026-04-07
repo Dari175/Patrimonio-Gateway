@@ -29,42 +29,38 @@ const SERVICES = {
 
 
 // =============================
-// LOGIN MANUAL (CONTROL TOTAL)
+// WAKE-UP INTELIGENTE
+// =============================
+const wakeServiceIfNeeded = async (baseUrl) => {
+  try {
+    await fetch(baseUrl + '/health');
+  } catch (err) {
+    console.log('[WAKE] Servicio dormido, despertando:', baseUrl);
+
+    await fetch(baseUrl + '/health').catch(() => null);
+
+    await new Promise(resolve => setTimeout(resolve, 3000));
+  }
+};
+
+
+// =============================
+// LOGIN MANUAL
 // =============================
 app.post('/auth/login', async (req, res) => {
   try {
-    const url = SERVICES.auth + '/login';
+    await wakeServiceIfNeeded(SERVICES.auth);
 
-    let response;
-
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(req.headers.authorization && {
-            Authorization: req.headers.authorization
-          })
-        },
-        body: JSON.stringify(req.body)
-      });
-    } catch (err) {
-      console.log('[LOGIN RETRY] Servicio dormido, despertando...');
-
-      // despertar solo si falla
-      await fetch(SERVICES.auth + '/health').catch(() => null);
-
-      response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(req.headers.authorization && {
-            Authorization: req.headers.authorization
-          })
-        },
-        body: JSON.stringify(req.body)
-      });
-    }
+    const response = await fetch(SERVICES.auth + '/login', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(req.headers.authorization && {
+          Authorization: req.headers.authorization
+        })
+      },
+      body: JSON.stringify(req.body)
+    });
 
     const data = await response.json();
     res.status(response.status).json(data);
@@ -78,7 +74,7 @@ app.post('/auth/login', async (req, res) => {
 
 
 // =============================
-// PROXY SEGURO (SIN MULTIPLICAR REQUESTS)
+// PROXY SEGURO
 // =============================
 const createSafeProxy = (config) => {
   return createProxyMiddleware({
@@ -91,8 +87,7 @@ const createSafeProxy = (config) => {
 
       if (res.headersSent) return;
 
-      // 🔥 IMPORTANTE:
-      // NO hacer retry en GET (evita 429)
+      // NO retry en GET (evita 429)
       if (req.method === 'GET') {
         return res.status(502).json({
           error: 'Servicio temporalmente no disponible'
@@ -104,7 +99,7 @@ const createSafeProxy = (config) => {
 
         console.log('[RECOVERY] Despertando servicio:', target);
 
-        await fetch(`${target}/health`).catch(() => null);
+        await wakeServiceIfNeeded(target);
 
         let rewrittenPath = req.originalUrl;
 
@@ -122,9 +117,7 @@ const createSafeProxy = (config) => {
           rewrittenPath = '/' + rewrittenPath;
         }
 
-        const retryUrl = target + rewrittenPath;
-
-        const retryRes = await fetch(retryUrl, {
+        const retryRes = await fetch(target + rewrittenPath, {
           method: req.method,
           headers: {
             'Content-Type': 'application/json',
@@ -159,6 +152,11 @@ const createSafeProxy = (config) => {
 // =============================
 // AUTH SERVICE
 // =============================
+app.use('/auth', async (req, res, next) => {
+  await wakeServiceIfNeeded(SERVICES.auth);
+  next();
+});
+
 app.use('/auth', createSafeProxy({
   target: SERVICES.auth,
   changeOrigin: true,
@@ -179,8 +177,9 @@ app.use('/auth', createSafeProxy({
 // ROLES
 // =============================
 app.use('/roles',
-  (req, res, next) => {
+  async (req, res, next) => {
     req.headers['x-module'] = 'roles';
+    await wakeServiceIfNeeded(SERVICES.auth);
     next();
   },
   createSafeProxy({
@@ -195,8 +194,9 @@ app.use('/roles',
 // USUARIOS
 // =============================
 app.use('/usuarios',
-  (req, res, next) => {
+  async (req, res, next) => {
     req.headers['x-module'] = 'usuarios';
+    await wakeServiceIfNeeded(SERVICES.auth);
     next();
   },
   createSafeProxy({
@@ -210,39 +210,51 @@ app.use('/usuarios',
 // =============================
 // UPLOAD SERVICE
 // =============================
-app.use('/api/upload', createSafeProxy({
-  target: SERVICES.upload,
-  changeOrigin: true,
-  pathRewrite: (path) => '/api/upload' + path,
-  onProxyReq: (proxyReq, req) => {
-    proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
+app.use('/api/upload',
+  async (req, res, next) => {
+    await wakeServiceIfNeeded(SERVICES.upload);
+    next();
+  },
+  createSafeProxy({
+    target: SERVICES.upload,
+    changeOrigin: true,
+    pathRewrite: (path) => '/api/upload' + path,
+    onProxyReq: (proxyReq, req) => {
+      proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
 
-    if (req.headers.authorization) {
-      proxyReq.setHeader('Authorization', req.headers.authorization);
+      if (req.headers.authorization) {
+        proxyReq.setHeader('Authorization', req.headers.authorization);
+      }
+
+      proxyReq.setHeader('x-module', 'roles');
     }
-
-    proxyReq.setHeader('x-module', 'roles');
-  }
-}));
+  })
+);
 
 
 // =============================
-// BIENES SERVICE (SIN RETRY)
-/// =============================
-app.use('/bienes', createProxyMiddleware({
-  target: SERVICES.bienes,
-  changeOrigin: true,
-  pathRewrite: (path) => '/api' + path,
-  proxyTimeout: 20000,
-  timeout: 20000,
-  onProxyReq: (proxyReq, req) => {
-    proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
+// BIENES SERVICE
+// =============================
+app.use('/bienes',
+  async (req, res, next) => {
+    await wakeServiceIfNeeded(SERVICES.bienes);
+    next();
+  },
+  createProxyMiddleware({
+    target: SERVICES.bienes,
+    changeOrigin: true,
+    pathRewrite: (path) => '/api' + path,
+    proxyTimeout: 20000,
+    timeout: 20000,
+    onProxyReq: (proxyReq, req) => {
+      proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
 
-    if (req.headers.authorization) {
-      proxyReq.setHeader('Authorization', req.headers.authorization);
+      if (req.headers.authorization) {
+        proxyReq.setHeader('Authorization', req.headers.authorization);
+      }
     }
-  }
-}));
+  })
+);
 
 
 // =============================
@@ -256,22 +268,28 @@ app.get('/health', (req, res) => {
 // =============================
 // IMPORTADOR SERVICE
 // =============================
-app.use('/importador', createSafeProxy({
-  target: SERVICES.importador + '/importar',
-  changeOrigin: true,
-  pathRewrite: {
-    '^/importador': ''
+app.use('/importador',
+  async (req, res, next) => {
+    await wakeServiceIfNeeded(SERVICES.importador);
+    next();
   },
-  onProxyReq: (proxyReq, req) => {
-    proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
+  createSafeProxy({
+    target: SERVICES.importador + '/importar',
+    changeOrigin: true,
+    pathRewrite: {
+      '^/importador': ''
+    },
+    onProxyReq: (proxyReq, req) => {
+      proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
 
-    if (req.headers.authorization) {
-      proxyReq.setHeader('Authorization', req.headers.authorization);
+      if (req.headers.authorization) {
+        proxyReq.setHeader('Authorization', req.headers.authorization);
+      }
+
+      proxyReq.setHeader('x-module', 'importador');
     }
-
-    proxyReq.setHeader('x-module', 'importador');
-  }
-}));
+  })
+);
 
 app.use('/importador', (req, res, next) => {
   console.log("PATH ORIGINAL:", req.url);
