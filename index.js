@@ -1,11 +1,12 @@
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const cors = require('cors');
-const fetch = require('node-fetch');
+
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+app.use(express.json()); 
 app.use(cors({
   origin: true,
   credentials: true
@@ -39,7 +40,7 @@ const warmUpServices = async () => {
 
   await Promise.allSettled(
     Object.values(SERVICES).map(url =>
-      fetch(`${url}/health`, { timeout: 8000 }).catch(() => null)
+      fetch(`${url}/health`).catch(() => null) // 🔥 sin timeout (node native)
     )
   );
 
