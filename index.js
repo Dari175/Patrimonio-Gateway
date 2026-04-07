@@ -19,7 +19,10 @@ app.use((req, res, next) => {
 // 🔐 AUTH SERVICE
 // =============================
 app.use('/auth', createProxyMiddleware({
-  target: 'http://localhost:5000',
+  //localhost:5000 es el auth service
+  //target: 'http://localhost:5000',
+  //Proxy para producción
+  target: 'https://patrimonio-apiservice-auth.onrender.com',
   changeOrigin: true,
 
   pathRewrite: {
@@ -40,11 +43,14 @@ app.use('/auth', createProxyMiddleware({
 // =============================
 app.use('/roles',
   (req, res, next) => {
-    req.headers['x-module'] = 'roles'; // 🔥 AQUÍ
+    req.headers['x-module'] = 'roles'; //
     next();
   },
   createProxyMiddleware({
-    target: 'http://localhost:5000',
+   //localhost:5000 es el auth service
+  //target: 'http://localhost:5000',
+  //Proxy para producción
+  target: 'https://patrimonio-apiservice-auth.onrender.com',
     changeOrigin: true,
     pathRewrite: { '^/roles': '/' }
   })
@@ -55,11 +61,11 @@ app.use('/roles',
 // =============================
 app.use('/usuarios',
   (req, res, next) => {
-    req.headers['x-module'] = 'usuarios'; // 🔥 AQUÍ
+    req.headers['x-module'] = 'usuarios'; //
     next();
   },
   createProxyMiddleware({
-    target: 'http://localhost:5000',
+  target: 'https://patrimonio-apiservice-auth.onrender.com',
     changeOrigin: true,
     pathRewrite: { '^/usuarios': '/' }
   })
@@ -69,7 +75,10 @@ app.use('/usuarios',
 // 📦 UPLOAD SERVICE
 // =============================
 app.use('/api/upload', createProxyMiddleware({
-  target: 'http://localhost:6000',
+  //localhost:6000 es el upload service
+  //target: 'http://localhost:6000',
+  //Proxy para producción
+  target: 'https://patrimonio-loadimages.onrender.com',
   changeOrigin: true,
 
   pathRewrite: (path) => '/api/upload' + path,
@@ -87,6 +96,27 @@ app.use('/api/upload', createProxyMiddleware({
 }));
 
 // =============================
+// 🧠 BIENES SERVICE (AISLADO)
+// =============================
+app.use('/bienes', createProxyMiddleware({
+  //localhost:3001 es el bienes service
+  //target: 'http://localhost:3001', 
+  //Proxy para producción
+  target: 'https://bienes-service-nldc.onrender.com',
+  changeOrigin: true,
+
+  pathRewrite: (path) => '/api' + path,
+
+  onProxyReq: (proxyReq, req) => {
+    proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
+
+    if (req.headers.authorization) {
+      proxyReq.setHeader('Authorization', req.headers.authorization);
+    }
+  }
+}));
+
+// =============================
 // ❤️ HEALTH
 // =============================
 app.get('/health', (req, res) => {
@@ -96,7 +126,10 @@ app.get('/health', (req, res) => {
 // 📊 IMPORTADOR SERVICE (PYTHON)
 // =============================
 app.use('/importador', createProxyMiddleware({
-  target: 'http://127.0.0.1:8000/importar',
+  //localhost:8000 es el importador service
+  //target: 'http://127.0.0.1:8000/importar',
+  //Proxy para producción
+  target: 'https://patrimonio-importexeldb.onrender.com/importar',
   changeOrigin: true,
 
   pathRewrite: {
