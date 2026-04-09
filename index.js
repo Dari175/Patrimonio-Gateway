@@ -46,8 +46,7 @@ const wakeServiceIfNeeded = async (baseUrl) => {
 // =============================
 // LOGIN MANUAL
 // =============================
-app.post('/auth/login', async (req, res) => {
-  try {
+app.post('/auth/login', express.json(), async (req, res) => {  try {
     await wakeServiceIfNeeded(SERVICES.auth);
 
     const response = await fetch(SERVICES.auth + '/login', {
