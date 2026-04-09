@@ -199,12 +199,31 @@ app.use('/usuarios',
     await wakeServiceIfNeeded(SERVICES.auth);
     next();
   },
-  createSafeProxy({
+    createSafeProxy({
     target: SERVICES.auth,
     changeOrigin: true,
-    pathRewrite: { '^/usuarios': '/' }
+    pathRewrite: { '^/usuarios': '/' },
+
+    onProxyReq: (proxyReq, req) => {
+      proxyReq.setHeader('x-module', 'usuarios');
+
+      if (req.headers.authorization) {
+        proxyReq.setHeader('Authorization', req.headers.authorization);
+      }
+
+      // 🔥 ESTE ES EL FIX REAL
+      if (req.body && Object.keys(req.body).length) {
+        const bodyData = JSON.stringify(req.body);
+
+        proxyReq.setHeader('Content-Type', 'application/json');
+        proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
+
+        proxyReq.write(bodyData);
+      }
+    }
   })
 );
+
 
 
 // =============================
