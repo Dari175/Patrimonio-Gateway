@@ -30,14 +30,21 @@ const SERVICES = {
 // =============================
 // WAKE-UP INTELIGENTE
 // =============================
+let lastWakeTime = 0;
+
 const wakeServiceIfNeeded = async (baseUrl) => {
+  const now = Date.now();
+
+  if (now - lastWakeTime < 30000) return;
+
+  lastWakeTime = now;
+
   try {
+    console.log('[WAKE] Verificando:', baseUrl);
     await fetch(baseUrl + '/health');
-  } catch (err) {
-    console.log('[WAKE] Servicio dormido, despertando:', baseUrl);
-
+  } catch {
+    console.log('[WAKE] Despertando:', baseUrl);
     await fetch(baseUrl + '/health').catch(() => null);
-
     await new Promise(resolve => setTimeout(resolve, 3000));
   }
 };
