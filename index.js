@@ -46,24 +46,24 @@ const wakeServiceIfNeeded = async (baseUrl) => {
 // =============================
 // LOGIN MANUAL
 // =============================
-app.post('/login', express.json(), async (req, res) => {  try {
+app.post('/auth/login', express.json(), async (req, res) => {
+  try {
     await wakeServiceIfNeeded(SERVICES.auth);
 
     const response = await fetch(SERVICES.auth + '/login', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        ...(req.headers.authorization && {
-          Authorization: req.headers.authorization
-        })
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify(req.body)
     });
 
-    const data = await response.json();
-    res.status(response.status).json(data);
+    const data = await response.text(); // 🔥 CAMBIO CLAVE
+
+    res.status(response.status).send(data);
 
   } catch (error) {
+    console.error("LOGIN ERROR:", error);
     res.status(502).json({
       error: 'Error en login'
     });
