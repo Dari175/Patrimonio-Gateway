@@ -30,22 +30,22 @@ const SERVICES = {
 // =============================
 // WAKE-UP INTELIGENTE
 // =============================
-let lastWakeTime = 0;
 
 const wakeServiceIfNeeded = async (baseUrl) => {
-  const now = Date.now();
-
-  if (now - lastWakeTime < 30000) return;
-
-  lastWakeTime = now;
-
   try {
-    console.log('[WAKE] Verificando:', baseUrl);
+    console.log('[WAKE] Ping:', baseUrl);
     await fetch(baseUrl + '/health');
-  } catch {
-    console.log('[WAKE] Despertando:', baseUrl);
+  } catch (err) {
+    console.log('[WAKE] Servicio dormido, despertando:', baseUrl);
+
+    // 🔥 intento 1
     await fetch(baseUrl + '/health').catch(() => null);
-    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // 🔥 pequeña espera REAL (importante)
+    await new Promise(resolve => setTimeout(resolve, 4000));
+
+    // 🔥 intento 2 (clave para Render)
+    await fetch(baseUrl + '/health').catch(() => null);
   }
 };
 
@@ -69,8 +69,8 @@ app.post('/auth/login', express.json(), async (req, res) => {
 
     console.log("✅ RESPUESTA DEL MICRO:", response.status);
 
-    const data = await response.text();
-
+    const data = await response.json();
+    res.status(response.status).json(data);
     res.setHeader('Content-Type', 'application/json');
     res.status(response.status).send(data);
   } catch (error) {
