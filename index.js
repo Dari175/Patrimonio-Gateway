@@ -47,28 +47,31 @@ const wakeServiceIfNeeded = async (baseUrl) => {
 // LOGIN MANUAL
 // =============================
 app.post('/auth/login', express.json(), async (req, res) => {
+  console.log("🔥 LOGIN GATEWAY HIT");
+
   try {
     await wakeServiceIfNeeded(SERVICES.auth);
 
+    console.log("➡️ Enviando a micro:", SERVICES.auth + '/login');
+
     const response = await fetch(SERVICES.auth + '/login', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req.body)
     });
 
-    const data = await response.text(); // 🔥 CAMBIO CLAVE
+    console.log("✅ RESPUESTA DEL MICRO:", response.status);
+
+    const data = await response.text();
 
     res.status(response.status).send(data);
 
   } catch (error) {
-    console.error("LOGIN ERROR:", error);
-    res.status(502).json({
-      error: 'Error en login'
-    });
+    console.error("💣 ERROR LOGIN:", error);
+    res.status(502).json({ error: 'Error en login' });
   }
 });
+
 
 
 // =============================
