@@ -71,8 +71,8 @@ app.post('/auth/login', express.json(), async (req, res) => {
 
     const data = await response.text();
 
+    res.setHeader('Content-Type', 'application/json');
     res.status(response.status).send(data);
-
   } catch (error) {
     console.error("💣 ERROR LOGIN:", error);
     res.status(502).json({ error: 'Error en login' });
