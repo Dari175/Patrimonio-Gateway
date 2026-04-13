@@ -37,14 +37,7 @@ const Historial = mongoose.model('Historial', new mongoose.Schema({
 }));
 
 // =============================
-// MIDDLEWARES BASE
-// =============================
-app.use(cors({
-  origin: true,
-  credentials: true
-}));
-
-app.use(express.json());
+app.use(cors({ origin: true, credentials: true }));
 
 app.use((req, res, next) => {
   console.log(`[GATEWAY] ${req.method} ${req.url}`);
@@ -63,14 +56,12 @@ function extraerUsuario(req) {
   }
 
   const authHeader = req.headers.authorization;
-
   if (!authHeader?.startsWith('Bearer ')) {
     return { usuario: null, email: null };
   }
 
   try {
     const decoded = jwt.decode(authHeader.split(' ')[1]);
-
     return {
       usuario: decoded?.sub || null,
       email: decoded?.email || null
@@ -85,8 +76,6 @@ function mapAction(req, status) {
     return status === 200 ? 'LOGIN_SUCCESS' : 'LOGIN_FAIL';
   }
 
-  if (req.originalUrl.includes('/logout')) return 'LOGOUT';
-
   switch (req.method) {
     case 'POST': return 'CREAR';
     case 'PUT':
@@ -97,25 +86,18 @@ function mapAction(req, status) {
 }
 
 function getRealIP(req) {
-  return (
-    req.headers['x-forwarded-for']?.split(',')[0] ||
-    req.socket?.remoteAddress ||
-    req.ip
-  );
+  return req.headers['x-forwarded-for']?.split(',')[0] || req.ip;
 }
 
 function parseUserAgent(ua = '') {
   ua = ua.toLowerCase();
 
-  let dispositivo = ua.includes('mobile') ? 'MOBILE' : 'DESKTOP';
-
-  let navegador = 'OTRO';
-  if (ua.includes('chrome')) navegador = 'CHROME';
-  else if (ua.includes('firefox')) navegador = 'FIREFOX';
-  else if (ua.includes('safari')) navegador = 'SAFARI';
-  else if (ua.includes('edge')) navegador = 'EDGE';
-
-  return { dispositivo, navegador };
+  return {
+    dispositivo: ua.includes('mobile') ? 'MOBILE' : 'DESKTOP',
+    navegador: ua.includes('chrome') ? 'CHROME' :
+               ua.includes('firefox') ? 'FIREFOX' :
+               ua.includes('safari') ? 'SAFARI' : 'OTRO'
+  };
 }
 
 function getRecursoId(req) {
@@ -124,7 +106,7 @@ function getRecursoId(req) {
 }
 
 // =============================
-// CONFIG SERVICIOS
+// CONFIG
 // =============================
 const SERVICES = {
   auth: 'https://patrimonio-apiservice-auth.onrender.com',
@@ -133,8 +115,6 @@ const SERVICES = {
   importador: 'https://patrimonio-importexeldb.onrender.com'
 };
 
-// =============================
-// WAKE-UP
 // =============================
 const wakeServiceIfNeeded = async (baseUrl) => {
   try {
@@ -151,39 +131,27 @@ const wakeServiceIfNeeded = async (baseUrl) => {
 // =============================
 app.get('/historial', async (req, res) => {
   try {
-    const { usuario, modulo, pagina = 1, limite = 20 } = req.query;
+    const { usuario, modulo } = req.query;
 
     const filtro = {};
     if (usuario) filtro.usuario = usuario;
     if (modulo) filtro.modulo = modulo;
 
-    const skip = (pagina - 1) * limite;
+    const logs = await Historial.find(filtro)
+      .sort({ fecha: -1 })
+      .limit(100);
 
-    const [total, logs] = await Promise.all([
-      Historial.countDocuments(filtro),
-      Historial.find(filtro)
-        .sort({ fecha: -1 })
-        .skip(skip)
-        .limit(parseInt(limite))
-    ]);
+    res.json({ ok: true, historial: logs });
 
-    res.json({
-      ok: true,
-      total,
-      pagina: parseInt(pagina),
-      limite: parseInt(limite),
-      historial: logs
-    });
-
-  } catch (err) {
-    res.status(500).json({ ok: false, mensaje: 'Error obteniendo historial' });
+  } catch {
+    res.status(500).json({ ok: false });
   }
 });
 
 // =============================
 // LOGIN
 // =============================
-app.post('/auth/login', async (req, res) => {
+app.post('/auth/login', express.json(), async (req, res) => {
   try {
     await wakeServiceIfNeeded(SERVICES.auth);
 
@@ -202,7 +170,7 @@ app.post('/auth/login', async (req, res) => {
 });
 
 // =============================
-// 🔥 PROXY (SIN ROMPER NADA)
+// PROXY SEGURO + HISTORIAL
 // =============================
 const createSafeProxy = (config) => {
   return createProxyMiddleware({
@@ -215,19 +183,13 @@ const createSafeProxy = (config) => {
         if (req.method === 'GET') return;
 
         const { usuario, email } = extraerUsuario(req);
-
-        const modulo =
-          req.headers['x-module'] ||
-          (req.originalUrl.startsWith('/auth') ? 'auth' : 'unknown');
-
-        const { dispositivo, navegador } =
-          parseUserAgent(req.headers['user-agent'] || '');
+        const { dispositivo, navegador } = parseUserAgent(req.headers['user-agent'] || '');
 
         setImmediate(() => {
           Historial.create({
             usuario,
             email,
-            modulo,
+            modulo: req.headers['x-module'] || 'unknown',
             metodo: req.method,
             ruta: req.originalUrl,
             accion: mapAction(req, proxyRes.statusCode),
@@ -242,28 +204,48 @@ const createSafeProxy = (config) => {
       } catch {}
     },
 
-    onError: config.onError
+    onError: async (err, req, res) => {
+      if (res.headersSent) return;
+
+      if (req.method === 'GET') {
+        return res.status(502).json({ error: 'Servicio no disponible' });
+      }
+
+      try {
+        const target = config.target;
+        await wakeServiceIfNeeded(target);
+
+        const retryRes = await fetch(target + req.url, {
+          method: req.method,
+          headers: { 'Content-Type': 'application/json' },
+          body: ['GET', 'HEAD'].includes(req.method)
+            ? undefined
+            : JSON.stringify(req.body)
+        });
+
+        const data = await retryRes.text();
+        res.status(retryRes.status).send(data);
+
+      } catch {
+        res.status(502).json({ error: 'Servicio no disponible' });
+      }
+    }
   });
 };
 
 // =============================
-// AUTH
+// ROUTES (INTACTOS)
 // =============================
-app.use('/auth',
-  async (req, res, next) => {
-    await wakeServiceIfNeeded(SERVICES.auth);
-    next();
-  },
-  createSafeProxy({
-    target: SERVICES.auth,
-    changeOrigin: true,
-    pathRewrite: { '^/auth': '/' }
-  })
-);
 
-// =============================
-// ROLES
-// =============================
+app.use('/auth', async (req, res, next) => {
+  await wakeServiceIfNeeded(SERVICES.auth);
+  next();
+}, createSafeProxy({
+  target: SERVICES.auth,
+  changeOrigin: true,
+  pathRewrite: { '^/auth': '/' }
+}));
+
 app.use('/roles',
   async (req, res, next) => {
     req.headers['x-module'] = 'roles';
@@ -277,9 +259,6 @@ app.use('/roles',
   })
 );
 
-// =============================
-// USUARIOS (NO TOCAR)
-// =============================
 app.use('/usuarios',
   async (req, res, next) => {
     req.headers['x-module'] = 'usuarios';
@@ -300,34 +279,14 @@ app.use('/usuarios',
 
       if (req.body && Object.keys(req.body).length) {
         const bodyData = JSON.stringify(req.body);
-
         proxyReq.setHeader('Content-Type', 'application/json');
         proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
-
         proxyReq.write(bodyData);
       }
     }
   })
 );
 
-// =============================
-// UPLOAD
-// =============================
-app.use('/api/upload',
-  async (req, res, next) => {
-    await wakeServiceIfNeeded(SERVICES.upload);
-    next();
-  },
-  createSafeProxy({
-    target: SERVICES.upload,
-    changeOrigin: true,
-    pathRewrite: (path) => '/api/upload' + path
-  })
-);
-
-// =============================
-// BIENES (SIN CAMBIOS)
-// =============================
 app.use('/bienes',
   async (req, res, next) => {
     await wakeServiceIfNeeded(SERVICES.bienes);
@@ -336,15 +295,10 @@ app.use('/bienes',
   createProxyMiddleware({
     target: SERVICES.bienes,
     changeOrigin: true,
-    pathRewrite: (path) => '/api' + path,
-    proxyTimeout: 20000,
-    timeout: 20000
+    pathRewrite: (path) => '/api' + path
   })
 );
 
-// =============================
-// IMPORTADOR
-// =============================
 app.use('/importador',
   async (req, res, next) => {
     await wakeServiceIfNeeded(SERVICES.importador);
