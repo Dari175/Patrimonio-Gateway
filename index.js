@@ -158,16 +158,23 @@ const wakeServiceIfNeeded = async (baseUrl) => {
 };
 
 // =============================
-// 🔥 HISTORIAL GLOBAL
+// 🔥 PROXY SEGURO (FIX REAL)
 // =============================
-function createSafeProxy(config, moduleName) {
+const createSafeProxy = (config, moduleName) => {
   return createProxyMiddleware({
     ...config,
     proxyTimeout: 20000,
     timeout: 20000,
 
-    onProxyReq: (proxyReq, req) => {
-      if (moduleName) proxyReq.setHeader('x-module', moduleName);
+    onProxyReq: (proxyReq, req, res) => {
+      // 🔥 respetar lógica original
+      if (config.onProxyReq) {
+        config.onProxyReq(proxyReq, req, res);
+      }
+
+      if (moduleName) {
+        proxyReq.setHeader('x-module', moduleName);
+      }
 
       if (req.headers.authorization) {
         proxyReq.setHeader('Authorization', req.headers.authorization);
@@ -176,7 +183,7 @@ function createSafeProxy(config, moduleName) {
       fixProxyBody(proxyReq, req);
     },
 
-    onProxyRes: (proxyRes, req) => {
+    onProxyRes: (proxyRes, req, res) => {
       try {
         if (req.method === 'GET') return;
 
@@ -202,38 +209,30 @@ function createSafeProxy(config, moduleName) {
             dispositivo,
             navegador,
             recursoId: getRecursoId(req)
-          }).catch(console.error);
+          }).catch(() => {});
         });
 
-      } catch (err) {
-        console.log('Error historial:', err.message);
-      }
+      } catch {}
     }
   });
-}
+};
 
 // =============================
 // 🔥 ENDPOINT HISTORIAL
 // =============================
 app.get('/historial', async (req, res) => {
   try {
-    const { usuario, modulo, pagina = 1, limite = 20 } = req.query;
+    const { usuario, modulo } = req.query;
 
     const filtro = {};
     if (usuario) filtro.usuario = usuario;
     if (modulo) filtro.modulo = modulo;
 
-    const skip = (pagina - 1) * limite;
+    const logs = await Historial.find(filtro)
+      .sort({ fecha: -1 })
+      .limit(50);
 
-    const [total, logs] = await Promise.all([
-      Historial.countDocuments(filtro),
-      Historial.find(filtro)
-        .sort({ fecha: -1 })
-        .skip(skip)
-        .limit(parseInt(limite))
-    ]);
-
-    res.json({ ok: true, total, historial: logs });
+    res.json({ ok: true, historial: logs });
 
   } catch {
     res.status(500).json({ ok: false });
@@ -262,7 +261,7 @@ app.post('/auth/login', async (req, res) => {
 });
 
 // =============================
-// ROUTES
+// ROUTES (SIN ROMPER)
 // =============================
 app.use('/auth', async (req, res, next) => {
   await wakeServiceIfNeeded(SERVICES.auth);
@@ -319,13 +318,10 @@ app.use('/importador', async (req, res, next) => {
 }, 'importador'));
 
 // =============================
-// HEALTH
-// =============================
 app.get('/health', (req, res) => {
   res.json({ ok: true });
 });
 
-// =============================
 app.listen(PORT, () => {
   console.log(`🚀 Gateway corriendo en puerto ${PORT}`);
 });
