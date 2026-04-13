@@ -1,23 +1,177 @@
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
+const mongoose = require('mongoose');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// =============================
+// 🔥 CONEXIÓN DIRECTA A MONGO
+// =============================
+mongoose.connect(
+  'mongodb+srv://patrimonioatotonilcoti_db_user:Patrimonio!123@cluster0.01itri5.mongodb.net/PatrimonioDB?appName=Cluster0'
+).then(() => {
+  console.log('✅ Mongo conectado (historial)');
+}).catch(err => {
+  console.error('❌ Error Mongo:', err.message);
+});
+
+// =============================
+// 🔥 MODELO HISTORIAL
+// =============================
+const HistorialSchema = new mongoose.Schema({
+  usuario: String,
+  email: String,
+  modulo: String,
+  metodo: String,
+  ruta: String,
+  accion: String,
+  status: Number,
+  ip: String,
+  userAgent: String,
+  fecha: { type: Date, default: Date.now }
+}, { versionKey: false });
+
+// índices (performance)
+HistorialSchema.index({ usuario: 1, fecha: -1 });
+HistorialSchema.index({ modulo: 1 });
+
+const Historial = mongoose.model('Historial', HistorialSchema);
+
+// =============================
+// MIDDLEWARES BASE
+// =============================
 app.use(cors({
   origin: true,
   credentials: true
 }));
 
+app.use(express.json());
+
+// =============================
+// 🔥 HISTORIAL GLOBAL
+// =============================
+app.use((req, res, next) => {
+  const originalSend = res.send;
+
+  res.send = async function (body) {
+    try {
+      // 🔹 usuario desde JWT
+      let usuario = null;
+      let email = null;
+
+      const authHeader = req.headers.authorization;
+
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+          const token = authHeader.split(' ')[1];
+          const decoded = jwt.decode(token);
+
+          usuario = decoded?.sub || null;
+          email = decoded?.email || null;
+
+        } catch (e) {}
+      }
+
+      const modulo =
+        req.headers['x-module'] ||
+        (req.originalUrl.startsWith('/auth') ? 'auth' : 'unknown');
+
+      // 🔥 evitar ruido (no guardar GET si quieres)
+      if (req.method !== 'GET') {
+        await Historial.create({
+          usuario,
+          email,
+          modulo,
+          metodo: req.method,
+          ruta: req.originalUrl,
+          accion: mapAction(req),
+          status: res.statusCode,
+          ip: req.ip,
+          userAgent: req.headers['user-agent'],
+          fecha: new Date()
+        });
+      }
+
+    } catch (err) {
+      console.log('Error historial:', err.message);
+    }
+
+    return originalSend.call(this, body);
+  };
+
+  next();
+});
+
+// =============================
+// 🧠 MAP ACTION
+// =============================
+function mapAction(req) {
+  if (req.originalUrl.includes('/login')) return 'LOGIN';
+  if (req.originalUrl.includes('/logout')) return 'LOGOUT';
+
+  switch (req.method) {
+    case 'POST': return 'CREAR';
+    case 'PUT':
+    case 'PATCH': return 'EDITAR';
+    case 'DELETE': return 'ELIMINAR';
+    default: return 'OTRO';
+  }
+}
+
+// =============================
+// 🔥 ENDPOINT HISTORIAL (ÚNICO)
+// =============================
+// 👉 Este es el que usarás en tu frontend
+app.get('/historial', async (req, res) => {
+  try {
+    const {
+      usuario,
+      modulo,
+      pagina = 1,
+      limite = 20
+    } = req.query;
+
+    const filtro = {};
+
+    if (usuario) filtro.usuario = usuario;
+    if (modulo) filtro.modulo = modulo;
+
+    const skip = (parseInt(pagina) - 1) * parseInt(limite);
+
+    const [total, logs] = await Promise.all([
+      Historial.countDocuments(filtro),
+      Historial.find(filtro)
+        .sort({ fecha: -1 })
+        .skip(skip)
+        .limit(parseInt(limite))
+    ]);
+
+    return res.json({
+      total,
+      pagina: parseInt(pagina),
+      limite: parseInt(limite),
+      historial: logs
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error obteniendo historial' });
+  }
+});
+
+// =============================
+// LOGGER
+// =============================
 app.use((req, res, next) => {
   console.log(`[GATEWAY] ${req.method} ${req.url}`);
   next();
 });
 
-
 // =============================
-// CONFIGURACION GLOBAL
+// CONFIG SERVICIOS
 // =============================
 const SERVICES = {
   auth: 'https://patrimonio-apiservice-auth.onrender.com',
@@ -26,40 +180,25 @@ const SERVICES = {
   importador: 'https://patrimonio-importexeldb.onrender.com'
 };
 
-
 // =============================
-// WAKE-UP INTELIGENTE
+// WAKE-UP
 // =============================
-
 const wakeServiceIfNeeded = async (baseUrl) => {
   try {
-    console.log('[WAKE] Ping:', baseUrl);
     await fetch(baseUrl + '/health');
-  } catch (err) {
-    console.log('[WAKE] Servicio dormido, despertando:', baseUrl);
-
-    // 🔥 intento 1
+  } catch {
     await fetch(baseUrl + '/health').catch(() => null);
-
-    // 🔥 pequeña espera REAL (importante)
-    await new Promise(resolve => setTimeout(resolve, 4000));
-
-    // 🔥 intento 2 (clave para Render)
+    await new Promise(r => setTimeout(r, 4000));
     await fetch(baseUrl + '/health').catch(() => null);
   }
 };
 
-
 // =============================
-// LOGIN MANUAL
+// LOGIN
 // =============================
-app.post('/auth/login', express.json(), async (req, res) => {
-  console.log("🔥 LOGIN GATEWAY HIT");
-
+app.post('/auth/login', async (req, res) => {
   try {
     await wakeServiceIfNeeded(SERVICES.auth);
-
-    console.log("➡️ Enviando a micro:", SERVICES.auth + '/login');
 
     const response = await fetch(SERVICES.auth + '/login', {
       method: 'POST',
@@ -67,119 +206,40 @@ app.post('/auth/login', express.json(), async (req, res) => {
       body: JSON.stringify(req.body)
     });
 
-    console.log("✅ RESPUESTA DEL MICRO:", response.status);
-
     const data = await response.json();
-    res.status(response.status).json(data);
-    res.setHeader('Content-Type', 'application/json');
-    res.status(response.status).send(data);
+    return res.status(response.status).json(data);
+
   } catch (error) {
-    console.error("💣 ERROR LOGIN:", error);
-    res.status(502).json({ error: 'Error en login' });
+    if (res.headersSent) return;
+    return res.status(502).json({ error: 'Error en login' });
   }
 });
 
-
-
 // =============================
-// PROXY SEGURO
+// PROXY BASE
 // =============================
 const createSafeProxy = (config) => {
   return createProxyMiddleware({
     ...config,
     proxyTimeout: 20000,
-    timeout: 20000,
-
-    onError: async (err, req, res) => {
-      console.log('[PROXY ERROR]', err.code);
-
-      if (res.headersSent) return;
-
-      // NO retry en GET (evita 429)
-      if (req.method === 'GET') {
-        return res.status(502).json({
-          error: 'Servicio temporalmente no disponible'
-        });
-      }
-
-      try {
-        const target = config.target;
-
-        console.log('[RECOVERY] Despertando servicio:', target);
-
-        await wakeServiceIfNeeded(target);
-
-        let rewrittenPath = req.originalUrl;
-
-        if (req.originalUrl.startsWith('/auth')) {
-          rewrittenPath = req.originalUrl.replace('/auth', '');
-        } else if (req.originalUrl.startsWith('/roles')) {
-          rewrittenPath = req.originalUrl.replace('/roles', '');
-        } else if (req.originalUrl.startsWith('/usuarios')) {
-          rewrittenPath = req.originalUrl.replace('/usuarios', '');
-        } else if (req.originalUrl.startsWith('/importador')) {
-          rewrittenPath = req.originalUrl.replace('/importador', '');
-        }
-
-        if (!rewrittenPath.startsWith('/')) {
-          rewrittenPath = '/' + rewrittenPath;
-        }
-
-        const retryRes = await fetch(target + rewrittenPath, {
-          method: req.method,
-          headers: {
-            'Content-Type': 'application/json',
-            ...(req.headers.authorization && {
-              Authorization: req.headers.authorization
-            })
-          },
-          body: ['GET', 'HEAD'].includes(req.method)
-            ? undefined
-            : JSON.stringify(req.body)
-        });
-
-        const data = await retryRes.text();
-
-        res.removeHeader('content-length');
-        res.status(retryRes.status).send(data);
-
-      } catch (retryErr) {
-        console.log('[FATAL] No se pudo recuperar el servicio');
-
-        if (!res.headersSent) {
-          res.status(502).json({
-            error: 'Servicio temporalmente no disponible'
-          });
-        }
-      }
-    }
+    timeout: 20000
   });
 };
 
-
 // =============================
-// AUTH SERVICE
+// AUTH
 // =============================
-app.use('/auth', async (req, res, next) => {
-  await wakeServiceIfNeeded(SERVICES.auth);
-  next();
-});
-
-app.use('/auth', createSafeProxy({
-  target: SERVICES.auth,
-  changeOrigin: true,
-  pathRewrite: {
-    '^/auth': '/'
+app.use('/auth',
+  async (req, res, next) => {
+    await wakeServiceIfNeeded(SERVICES.auth);
+    next();
   },
-  onProxyReq: (proxyReq, req) => {
-    proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
-
-    if (req.headers.authorization) {
-      proxyReq.setHeader('Authorization', req.headers.authorization);
-    }
-  }
-}));
-
+  createSafeProxy({
+    target: SERVICES.auth,
+    changeOrigin: true,
+    pathRewrite: { '^/auth': '/' }
+  })
+);
 
 // =============================
 // ROLES
@@ -197,7 +257,6 @@ app.use('/roles',
   })
 );
 
-
 // =============================
 // USUARIOS
 // =============================
@@ -207,35 +266,15 @@ app.use('/usuarios',
     await wakeServiceIfNeeded(SERVICES.auth);
     next();
   },
-    createSafeProxy({
+  createSafeProxy({
     target: SERVICES.auth,
     changeOrigin: true,
-    pathRewrite: { '^/usuarios': '/' },
-
-    onProxyReq: (proxyReq, req) => {
-      proxyReq.setHeader('x-module', 'usuarios');
-
-      if (req.headers.authorization) {
-        proxyReq.setHeader('Authorization', req.headers.authorization);
-      }
-
-      // 🔥 ESTE ES EL FIX REAL
-      if (req.body && Object.keys(req.body).length) {
-        const bodyData = JSON.stringify(req.body);
-
-        proxyReq.setHeader('Content-Type', 'application/json');
-        proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
-
-        proxyReq.write(bodyData);
-      }
-    }
+    pathRewrite: { '^/usuarios': '/' }
   })
 );
 
-
-
 // =============================
-// UPLOAD SERVICE
+// UPLOAD
 // =============================
 app.use('/api/upload',
   async (req, res, next) => {
@@ -245,56 +284,27 @@ app.use('/api/upload',
   createSafeProxy({
     target: SERVICES.upload,
     changeOrigin: true,
-    pathRewrite: (path) => '/api/upload' + path,
-    onProxyReq: (proxyReq, req) => {
-      proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
-
-      if (req.headers.authorization) {
-        proxyReq.setHeader('Authorization', req.headers.authorization);
-      }
-
-      proxyReq.setHeader('x-module', 'roles');
-    }
+    pathRewrite: (path) => '/api/upload' + path
   })
 );
 
-
 // =============================
-// BIENES SERVICE
+// BIENES
 // =============================
 app.use('/bienes',
   async (req, res, next) => {
     await wakeServiceIfNeeded(SERVICES.bienes);
     next();
   },
-  createProxyMiddleware({
+  createSafeProxy({
     target: SERVICES.bienes,
     changeOrigin: true,
-    pathRewrite: (path) => '/api' + path,
-    proxyTimeout: 20000,
-    timeout: 20000,
-    onProxyReq: (proxyReq, req) => {
-      proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
-
-      if (req.headers.authorization) {
-        proxyReq.setHeader('Authorization', req.headers.authorization);
-      }
-    }
+    pathRewrite: (path) => '/api' + path
   })
 );
 
-
 // =============================
-// HEALTH
-// =============================
-app.get('/health', (req, res) => {
-  res.json({ ok: true });
-});
-
-app.use(express.json());
-
-// =============================
-// IMPORTADOR SERVICE
+// IMPORTADOR
 // =============================
 app.use('/importador',
   async (req, res, next) => {
@@ -304,27 +314,18 @@ app.use('/importador',
   createSafeProxy({
     target: SERVICES.importador + '/importar',
     changeOrigin: true,
-    pathRewrite: {
-      '^/importador': ''
-    },
-    onProxyReq: (proxyReq, req) => {
-      proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
-
-      if (req.headers.authorization) {
-        proxyReq.setHeader('Authorization', req.headers.authorization);
-      }
-
-      proxyReq.setHeader('x-module', 'importador');
-    }
+    pathRewrite: { '^/importador': '' }
   })
 );
 
-app.use('/importador', (req, res, next) => {
-  console.log("PATH ORIGINAL:", req.url);
-  next();
+// =============================
+// HEALTH
+// =============================
+app.get('/health', (req, res) => {
+  res.json({ ok: true });
 });
 
-
+// =============================
 app.listen(PORT, () => {
-  console.log(`Gateway corriendo en puerto ${PORT}`);
+  console.log(`🚀 Gateway corriendo en puerto ${PORT}`);
 });
