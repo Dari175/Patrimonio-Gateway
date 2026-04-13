@@ -8,10 +8,10 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // =============================
-// 🔥 MONGO
+// 🔥 MONGO (historial)
 // =============================
 mongoose.connect(
-  'mongodb+srv://patrimonioatotonilcoti_db_user:<db_password>@cluster0.01itri5.mongodb.net/patrimonio'
+  'mongodb+srv://patrimonioatotonilcoti_db_user:Patrimonio!123@cluster0.01itri5.mongodb.net/PatrimonioDB?appName=Cluster0'
 ).then(() => {
   console.log('✅ Mongo conectado (historial)');
 }).catch(err => {
@@ -21,7 +21,7 @@ mongoose.connect(
 // =============================
 // 🔥 MODELO HISTORIAL
 // =============================
-const HistorialSchema = new mongoose.Schema({
+const Historial = mongoose.model('Historial', new mongoose.Schema({
   usuario: String,
   email: String,
   modulo: String,
@@ -29,89 +29,45 @@ const HistorialSchema = new mongoose.Schema({
   ruta: String,
   accion: String,
   status: Number,
-  ip: String,
-  userAgent: String,
   fecha: { type: Date, default: Date.now }
-}, { versionKey: false });
-
-HistorialSchema.index({ usuario: 1, fecha: -1 });
-HistorialSchema.index({ modulo: 1 });
-
-const Historial = mongoose.model('Historial', HistorialSchema);
+}));
 
 // =============================
-// MIDDLEWARES
+// MIDDLEWARES BASE
 // =============================
 app.use(cors({
   origin: true,
   credentials: true
 }));
 
-app.use(express.json());
-
-// =============================
-// 🔥 HISTORIAL (NO BLOQUEANTE)
-// =============================
 app.use((req, res, next) => {
-  const originalSend = res.send;
-
-  res.send = function (body) {
-    try {
-      // 🔹 usuario desde JWT
-      let usuario = null;
-      let email = null;
-
-      const authHeader = req.headers.authorization;
-
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        try {
-          const token = authHeader.split(' ')[1];
-          const decoded = jwt.decode(token);
-
-          usuario = decoded?.sub || null;
-          email = decoded?.email || null;
-
-        } catch (e) {}
-      }
-
-      const modulo =
-        req.headers['x-module'] ||
-        (req.originalUrl.startsWith('/auth') ? 'auth' : 'unknown');
-
-      // 🔥 SOLO acciones importantes
-      if (req.method !== 'GET') {
-        // 🚀 BACKGROUND (NO BLOQUEA)
-        setImmediate(() => {
-          Historial.create({
-            usuario,
-            email,
-            modulo,
-            metodo: req.method,
-            ruta: req.originalUrl,
-            accion: mapAction(req),
-            status: res.statusCode,
-            ip: req.ip,
-            userAgent: req.headers['user-agent'],
-            fecha: new Date()
-          }).catch(err => {
-            console.log('Error historial:', err.message);
-          });
-        });
-      }
-
-    } catch (err) {
-      console.log('Error historial middleware:', err.message);
-    }
-
-    return originalSend.call(this, body);
-  };
-
+  console.log(`[GATEWAY] ${req.method} ${req.url}`);
   next();
 });
 
 // =============================
-// 🧠 MAP ACTION
+// 🧠 HELPERS
 // =============================
+function extraerUsuario(req) {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return {};
+  }
+
+  try {
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.decode(token);
+
+    return {
+      usuario: decoded?.sub || null,
+      email: decoded?.email || null
+    };
+  } catch {
+    return {};
+  }
+}
+
 function mapAction(req) {
   if (req.originalUrl.includes('/login')) return 'LOGIN';
   if (req.originalUrl.includes('/logout')) return 'LOGOUT';
@@ -126,55 +82,7 @@ function mapAction(req) {
 }
 
 // =============================
-// 🔥 ENDPOINT HISTORIAL
-// =============================
-app.get('/historial', async (req, res) => {
-  try {
-    const {
-      usuario,
-      modulo,
-      pagina = 1,
-      limite = 20
-    } = req.query;
-
-    const filtro = {};
-
-    if (usuario) filtro.usuario = usuario;
-    if (modulo) filtro.modulo = modulo;
-
-    const skip = (parseInt(pagina) - 1) * parseInt(limite);
-
-    const [total, logs] = await Promise.all([
-      Historial.countDocuments(filtro),
-      Historial.find(filtro)
-        .sort({ fecha: -1 })
-        .skip(skip)
-        .limit(parseInt(limite))
-    ]);
-
-    return res.json({
-      total,
-      pagina: parseInt(pagina),
-      limite: parseInt(limite),
-      historial: logs
-    });
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error obteniendo historial' });
-  }
-});
-
-// =============================
-// LOGGER
-// =============================
-app.use((req, res, next) => {
-  console.log(`[GATEWAY] ${req.method} ${req.url}`);
-  next();
-});
-
-// =============================
-// SERVICIOS
+// CONFIG SERVICIOS
 // =============================
 const SERVICES = {
   auth: 'https://patrimonio-apiservice-auth.onrender.com',
@@ -184,22 +92,25 @@ const SERVICES = {
 };
 
 // =============================
-// WAKE-UP
+// WAKE-UP INTELIGENTE
 // =============================
 const wakeServiceIfNeeded = async (baseUrl) => {
   try {
+    console.log('[WAKE] Ping:', baseUrl);
     await fetch(baseUrl + '/health');
-  } catch {
+  } catch (err) {
+    console.log('[WAKE] Servicio dormido, despertando:', baseUrl);
+
     await fetch(baseUrl + '/health').catch(() => null);
-    await new Promise(r => setTimeout(r, 4000));
+    await new Promise(resolve => setTimeout(resolve, 4000));
     await fetch(baseUrl + '/health').catch(() => null);
   }
 };
 
 // =============================
-// LOGIN
+// LOGIN MANUAL
 // =============================
-app.post('/auth/login', async (req, res) => {
+app.post('/auth/login', express.json(), async (req, res) => {
   try {
     await wakeServiceIfNeeded(SERVICES.auth);
 
@@ -219,13 +130,103 @@ app.post('/auth/login', async (req, res) => {
 });
 
 // =============================
-// PROXY BASE
+// 🔥 PROXY SEGURO + HISTORIAL
 // =============================
 const createSafeProxy = (config) => {
   return createProxyMiddleware({
     ...config,
     proxyTimeout: 20000,
-    timeout: 20000
+    timeout: 20000,
+
+    // 🔥 HISTORIAL CORRECTO
+    onProxyRes: (proxyRes, req, res) => {
+      try {
+        if (req.method === 'GET') return;
+
+        const { usuario, email } = extraerUsuario(req);
+
+        const modulo =
+          req.headers['x-module'] ||
+          (req.originalUrl.startsWith('/auth') ? 'auth' : 'unknown');
+
+        setImmediate(() => {
+          Historial.create({
+            usuario,
+            email,
+            modulo,
+            metodo: req.method,
+            ruta: req.originalUrl,
+            accion: mapAction(req),
+            status: proxyRes.statusCode
+          }).catch(err => {
+            console.log('Error historial:', err.message);
+          });
+        });
+
+      } catch (err) {
+        console.log('Error historial proxy:', err.message);
+      }
+    },
+
+    // 🔥 TU RECOVERY ORIGINAL
+    onError: async (err, req, res) => {
+      console.log('[PROXY ERROR]', err.code);
+
+      if (res.headersSent) return;
+
+      if (req.method === 'GET') {
+        return res.status(502).json({
+          error: 'Servicio temporalmente no disponible'
+        });
+      }
+
+      try {
+        const target = config.target;
+
+        await wakeServiceIfNeeded(target);
+
+        let rewrittenPath = req.originalUrl;
+
+        if (req.originalUrl.startsWith('/auth')) {
+          rewrittenPath = req.originalUrl.replace('/auth', '');
+        } else if (req.originalUrl.startsWith('/roles')) {
+          rewrittenPath = req.originalUrl.replace('/roles', '');
+        } else if (req.originalUrl.startsWith('/usuarios')) {
+          rewrittenPath = req.originalUrl.replace('/usuarios', '');
+        } else if (req.originalUrl.startsWith('/importador')) {
+          rewrittenPath = req.originalUrl.replace('/importador', '');
+        }
+
+        if (!rewrittenPath.startsWith('/')) {
+          rewrittenPath = '/' + rewrittenPath;
+        }
+
+        const retryRes = await fetch(target + rewrittenPath, {
+          method: req.method,
+          headers: {
+            'Content-Type': 'application/json',
+            ...(req.headers.authorization && {
+              Authorization: req.headers.authorization
+            })
+          },
+          body: ['GET', 'HEAD'].includes(req.method)
+            ? undefined
+            : JSON.stringify(req.body)
+        });
+
+        const data = await retryRes.text();
+
+        res.removeHeader('content-length');
+        res.status(retryRes.status).send(data);
+
+      } catch {
+        if (!res.headersSent) {
+          res.status(502).json({
+            error: 'Servicio temporalmente no disponible'
+          });
+        }
+      }
+    }
   });
 };
 
@@ -272,7 +273,24 @@ app.use('/usuarios',
   createSafeProxy({
     target: SERVICES.auth,
     changeOrigin: true,
-    pathRewrite: { '^/usuarios': '/' }
+    pathRewrite: { '^/usuarios': '/' },
+
+    onProxyReq: (proxyReq, req) => {
+      proxyReq.setHeader('x-module', 'usuarios');
+
+      if (req.headers.authorization) {
+        proxyReq.setHeader('Authorization', req.headers.authorization);
+      }
+
+      if (req.body && Object.keys(req.body).length) {
+        const bodyData = JSON.stringify(req.body);
+
+        proxyReq.setHeader('Content-Type', 'application/json');
+        proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
+
+        proxyReq.write(bodyData);
+      }
+    }
   })
 );
 
@@ -299,10 +317,12 @@ app.use('/bienes',
     await wakeServiceIfNeeded(SERVICES.bienes);
     next();
   },
-  createSafeProxy({
+  createProxyMiddleware({
     target: SERVICES.bienes,
     changeOrigin: true,
-    pathRewrite: (path) => '/api' + path
+    pathRewrite: (path) => '/api' + path,
+    proxyTimeout: 20000,
+    timeout: 20000
   })
 );
 
