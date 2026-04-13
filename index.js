@@ -8,10 +8,10 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // =============================
-// 🔥 CONEXIÓN DIRECTA A MONGO
+// 🔥 MONGO
 // =============================
 mongoose.connect(
-  'mongodb+srv://patrimonioatotonilcoti_db_user:Patrimonio!123@cluster0.01itri5.mongodb.net/PatrimonioDB?appName=Cluster0'
+  'mongodb+srv://patrimonioatotonilcoti_db_user:<db_password>@cluster0.01itri5.mongodb.net/patrimonio'
 ).then(() => {
   console.log('✅ Mongo conectado (historial)');
 }).catch(err => {
@@ -34,14 +34,13 @@ const HistorialSchema = new mongoose.Schema({
   fecha: { type: Date, default: Date.now }
 }, { versionKey: false });
 
-// índices (performance)
 HistorialSchema.index({ usuario: 1, fecha: -1 });
 HistorialSchema.index({ modulo: 1 });
 
 const Historial = mongoose.model('Historial', HistorialSchema);
 
 // =============================
-// MIDDLEWARES BASE
+// MIDDLEWARES
 // =============================
 app.use(cors({
   origin: true,
@@ -51,12 +50,12 @@ app.use(cors({
 app.use(express.json());
 
 // =============================
-// 🔥 HISTORIAL GLOBAL
+// 🔥 HISTORIAL (NO BLOQUEANTE)
 // =============================
 app.use((req, res, next) => {
   const originalSend = res.send;
 
-  res.send = async function (body) {
+  res.send = function (body) {
     try {
       // 🔹 usuario desde JWT
       let usuario = null;
@@ -79,24 +78,29 @@ app.use((req, res, next) => {
         req.headers['x-module'] ||
         (req.originalUrl.startsWith('/auth') ? 'auth' : 'unknown');
 
-      // 🔥 evitar ruido (no guardar GET si quieres)
+      // 🔥 SOLO acciones importantes
       if (req.method !== 'GET') {
-        await Historial.create({
-          usuario,
-          email,
-          modulo,
-          metodo: req.method,
-          ruta: req.originalUrl,
-          accion: mapAction(req),
-          status: res.statusCode,
-          ip: req.ip,
-          userAgent: req.headers['user-agent'],
-          fecha: new Date()
+        // 🚀 BACKGROUND (NO BLOQUEA)
+        setImmediate(() => {
+          Historial.create({
+            usuario,
+            email,
+            modulo,
+            metodo: req.method,
+            ruta: req.originalUrl,
+            accion: mapAction(req),
+            status: res.statusCode,
+            ip: req.ip,
+            userAgent: req.headers['user-agent'],
+            fecha: new Date()
+          }).catch(err => {
+            console.log('Error historial:', err.message);
+          });
         });
       }
 
     } catch (err) {
-      console.log('Error historial:', err.message);
+      console.log('Error historial middleware:', err.message);
     }
 
     return originalSend.call(this, body);
@@ -122,9 +126,8 @@ function mapAction(req) {
 }
 
 // =============================
-// 🔥 ENDPOINT HISTORIAL (ÚNICO)
+// 🔥 ENDPOINT HISTORIAL
 // =============================
-// 👉 Este es el que usarás en tu frontend
 app.get('/historial', async (req, res) => {
   try {
     const {
@@ -171,7 +174,7 @@ app.use((req, res, next) => {
 });
 
 // =============================
-// CONFIG SERVICIOS
+// SERVICIOS
 // =============================
 const SERVICES = {
   auth: 'https://patrimonio-apiservice-auth.onrender.com',
