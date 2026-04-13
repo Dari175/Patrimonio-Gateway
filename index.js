@@ -231,6 +231,51 @@ const createSafeProxy = (config) => {
 };
 
 // =============================
+// 🔥 ENDPOINT HISTORIAL
+// =============================
+app.get('/historial', async (req, res) => {
+  try {
+    const {
+      usuario,
+      modulo,
+      pagina = 1,
+      limite = 20
+    } = req.query;
+
+    const filtro = {};
+
+    if (usuario) filtro.usuario = usuario;
+    if (modulo) filtro.modulo = modulo;
+
+    const skip = (parseInt(pagina) - 1) * parseInt(limite);
+
+    const [total, logs] = await Promise.all([
+      Historial.countDocuments(filtro),
+      Historial.find(filtro)
+        .sort({ fecha: -1 })
+        .skip(skip)
+        .limit(parseInt(limite))
+    ]);
+
+    return res.json({
+      ok: true,
+      total,
+      pagina: parseInt(pagina),
+      limite: parseInt(limite),
+      historial: logs
+    });
+
+  } catch (err) {
+    console.error('❌ Error en getHistorial:', err);
+
+    return res.status(500).json({
+      ok: false,
+      mensaje: 'Error obteniendo historial'
+    });
+  }
+});
+
+// =============================
 // AUTH
 // =============================
 app.use('/auth',
