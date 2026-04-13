@@ -8,10 +8,10 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // =============================
-// 🔥 MONGO (historial)
+// 🔥 MONGO
 // =============================
 mongoose.connect(
-  'mongodb+srv://patrimonioatotonilcoti_db_user:Patrimonio!123@cluster0.01itri5.mongodb.net/PatrimonioDB?appName=Cluster0'
+'mongodb+srv://patrimonioatotonilcoti_db_user:Patrimonio!123@cluster0.01itri5.mongodb.net/PatrimonioDB?appName=Cluster0'
 ).then(() => {
   console.log('✅ Mongo conectado (historial)');
 }).catch(err => {
@@ -24,11 +24,20 @@ mongoose.connect(
 const Historial = mongoose.model('Historial', new mongoose.Schema({
   usuario: String,
   email: String,
+
   modulo: String,
   metodo: String,
   ruta: String,
   accion: String,
+
   status: Number,
+
+  ip: String,
+  dispositivo: String,
+  navegador: String,
+
+  recursoId: String,
+
   fecha: { type: Date, default: Date.now }
 }));
 
@@ -40,6 +49,8 @@ app.use(cors({
   credentials: true
 }));
 
+app.use(express.json());
+
 app.use((req, res, next) => {
   console.log(`[GATEWAY] ${req.method} ${req.url}`);
   next();
@@ -49,10 +60,18 @@ app.use((req, res, next) => {
 // 🧠 HELPERS
 // =============================
 function extraerUsuario(req) {
+  // 🔥 LOGIN (no hay token aún)
+  if (req.originalUrl.includes('/login')) {
+    return {
+      usuario: null,
+      email: req.body?.email || null
+    };
+  }
+
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return {};
+    return { usuario: null, email: null };
   }
 
   try {
@@ -64,12 +83,15 @@ function extraerUsuario(req) {
       email: decoded?.email || null
     };
   } catch {
-    return {};
+    return { usuario: null, email: null };
   }
 }
 
-function mapAction(req) {
-  if (req.originalUrl.includes('/login')) return 'LOGIN';
+function mapAction(req, status) {
+  if (req.originalUrl.includes('/login')) {
+    return status === 200 ? 'LOGIN_SUCCESS' : 'LOGIN_FAIL';
+  }
+
   if (req.originalUrl.includes('/logout')) return 'LOGOUT';
 
   switch (req.method) {
@@ -79,6 +101,36 @@ function mapAction(req) {
     case 'DELETE': return 'ELIMINAR';
     default: return 'OTRO';
   }
+}
+
+function getRealIP(req) {
+  return (
+    req.headers['x-forwarded-for']?.split(',')[0] ||
+    req.socket?.remoteAddress ||
+    req.ip ||
+    null
+  );
+}
+
+function parseUserAgent(ua = '') {
+  ua = ua.toLowerCase();
+
+  let dispositivo = 'DESKTOP';
+  if (ua.includes('mobile')) dispositivo = 'MOBILE';
+  if (ua.includes('tablet')) dispositivo = 'TABLET';
+
+  let navegador = 'OTRO';
+  if (ua.includes('chrome')) navegador = 'CHROME';
+  else if (ua.includes('firefox')) navegador = 'FIREFOX';
+  else if (ua.includes('safari')) navegador = 'SAFARI';
+  else if (ua.includes('edge')) navegador = 'EDGE';
+
+  return { dispositivo, navegador };
+}
+
+function getRecursoId(req) {
+  const match = req.originalUrl.match(/\/([a-f0-9]{24})/);
+  return match ? match[1] : null;
 }
 
 // =============================
@@ -92,25 +144,57 @@ const SERVICES = {
 };
 
 // =============================
-// WAKE-UP INTELIGENTE
+// WAKE-UP
 // =============================
 const wakeServiceIfNeeded = async (baseUrl) => {
   try {
-    console.log('[WAKE] Ping:', baseUrl);
     await fetch(baseUrl + '/health');
-  } catch (err) {
-    console.log('[WAKE] Servicio dormido, despertando:', baseUrl);
-
+  } catch {
     await fetch(baseUrl + '/health').catch(() => null);
-    await new Promise(resolve => setTimeout(resolve, 4000));
+    await new Promise(r => setTimeout(r, 4000));
     await fetch(baseUrl + '/health').catch(() => null);
   }
 };
 
 // =============================
-// LOGIN MANUAL
+// 🔥 ENDPOINT HISTORIAL
 // =============================
-app.post('/auth/login', express.json(), async (req, res) => {
+app.get('/historial', async (req, res) => {
+  try {
+    const { usuario, modulo, pagina = 1, limite = 20 } = req.query;
+
+    const filtro = {};
+    if (usuario) filtro.usuario = usuario;
+    if (modulo) filtro.modulo = modulo;
+
+    const skip = (pagina - 1) * limite;
+
+    const [total, logs] = await Promise.all([
+      Historial.countDocuments(filtro),
+      Historial.find(filtro)
+        .sort({ fecha: -1 })
+        .skip(skip)
+        .limit(parseInt(limite))
+    ]);
+
+    res.json({
+      ok: true,
+      total,
+      pagina: parseInt(pagina),
+      limite: parseInt(limite),
+      historial: logs
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, mensaje: 'Error obteniendo historial' });
+  }
+});
+
+// =============================
+// LOGIN
+// =============================
+app.post('/auth/login', async (req, res) => {
   try {
     await wakeServiceIfNeeded(SERVICES.auth);
 
@@ -123,14 +207,13 @@ app.post('/auth/login', express.json(), async (req, res) => {
     const data = await response.json();
     return res.status(response.status).json(data);
 
-  } catch (error) {
-    if (res.headersSent) return;
+  } catch {
     return res.status(502).json({ error: 'Error en login' });
   }
 });
 
 // =============================
-// 🔥 PROXY SEGURO + HISTORIAL
+// 🔥 PROXY + HISTORIAL
 // =============================
 const createSafeProxy = (config) => {
   return createProxyMiddleware({
@@ -138,8 +221,7 @@ const createSafeProxy = (config) => {
     proxyTimeout: 20000,
     timeout: 20000,
 
-    // 🔥 HISTORIAL CORRECTO
-    onProxyRes: (proxyRes, req, res) => {
+    onProxyRes: (proxyRes, req) => {
       try {
         if (req.method === 'GET') return;
 
@@ -149,6 +231,9 @@ const createSafeProxy = (config) => {
           req.headers['x-module'] ||
           (req.originalUrl.startsWith('/auth') ? 'auth' : 'unknown');
 
+        const ua = req.headers['user-agent'] || '';
+        const { dispositivo, navegador } = parseUserAgent(ua);
+
         setImmediate(() => {
           Historial.create({
             usuario,
@@ -156,8 +241,14 @@ const createSafeProxy = (config) => {
             modulo,
             metodo: req.method,
             ruta: req.originalUrl,
-            accion: mapAction(req),
-            status: proxyRes.statusCode
+            accion: mapAction(req, proxyRes.statusCode),
+            status: proxyRes.statusCode,
+
+            ip: getRealIP(req),
+            dispositivo,
+            navegador,
+
+            recursoId: getRecursoId(req)
           }).catch(err => {
             console.log('Error historial:', err.message);
           });
@@ -168,10 +259,7 @@ const createSafeProxy = (config) => {
       }
     },
 
-    // 🔥 TU RECOVERY ORIGINAL
     onError: async (err, req, res) => {
-      console.log('[PROXY ERROR]', err.code);
-
       if (res.headersSent) return;
 
       if (req.method === 'GET') {
@@ -231,51 +319,6 @@ const createSafeProxy = (config) => {
 };
 
 // =============================
-// 🔥 ENDPOINT HISTORIAL
-// =============================
-app.get('/historial', async (req, res) => {
-  try {
-    const {
-      usuario,
-      modulo,
-      pagina = 1,
-      limite = 20
-    } = req.query;
-
-    const filtro = {};
-
-    if (usuario) filtro.usuario = usuario;
-    if (modulo) filtro.modulo = modulo;
-
-    const skip = (parseInt(pagina) - 1) * parseInt(limite);
-
-    const [total, logs] = await Promise.all([
-      Historial.countDocuments(filtro),
-      Historial.find(filtro)
-        .sort({ fecha: -1 })
-        .skip(skip)
-        .limit(parseInt(limite))
-    ]);
-
-    return res.json({
-      ok: true,
-      total,
-      pagina: parseInt(pagina),
-      limite: parseInt(limite),
-      historial: logs
-    });
-
-  } catch (err) {
-    console.error('❌ Error en getHistorial:', err);
-
-    return res.status(500).json({
-      ok: false,
-      mensaje: 'Error obteniendo historial'
-    });
-  }
-});
-
-// =============================
 // AUTH
 // =============================
 app.use('/auth',
@@ -318,24 +361,7 @@ app.use('/usuarios',
   createSafeProxy({
     target: SERVICES.auth,
     changeOrigin: true,
-    pathRewrite: { '^/usuarios': '/' },
-
-    onProxyReq: (proxyReq, req) => {
-      proxyReq.setHeader('x-module', 'usuarios');
-
-      if (req.headers.authorization) {
-        proxyReq.setHeader('Authorization', req.headers.authorization);
-      }
-
-      if (req.body && Object.keys(req.body).length) {
-        const bodyData = JSON.stringify(req.body);
-
-        proxyReq.setHeader('Content-Type', 'application/json');
-        proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
-
-        proxyReq.write(bodyData);
-      }
-    }
+    pathRewrite: { '^/usuarios': '/' }
   })
 );
 
