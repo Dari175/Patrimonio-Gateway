@@ -54,17 +54,6 @@ app.use((req, res, next) => {
 // =============================
 // 🧠 HELPERS
 // =============================
-function fixProxyBody(proxyReq, req) {
-  if (req.body && Object.keys(req.body).length) {
-    const bodyData = JSON.stringify(req.body);
-
-    proxyReq.setHeader('Content-Type', 'application/json');
-    proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
-
-    proxyReq.write(bodyData);
-  }
-}
-
 function extraerUsuario(req) {
   if (req.originalUrl.includes('/login')) {
     return {
@@ -158,84 +147,36 @@ const wakeServiceIfNeeded = async (baseUrl) => {
 };
 
 // =============================
-// 🔥 PROXY SEGURO (FIX REAL)
-// =============================
-const createSafeProxy = (config, moduleName) => {
-  return createProxyMiddleware({
-    ...config,
-    proxyTimeout: 20000,
-    timeout: 20000,
-
-    onProxyReq: (proxyReq, req, res) => {
-      // 🔥 respetar lógica original
-      if (config.onProxyReq) {
-        config.onProxyReq(proxyReq, req, res);
-      }
-
-      if (moduleName) {
-        proxyReq.setHeader('x-module', moduleName);
-      }
-
-      if (req.headers.authorization) {
-        proxyReq.setHeader('Authorization', req.headers.authorization);
-      }
-
-      fixProxyBody(proxyReq, req);
-    },
-
-    onProxyRes: (proxyRes, req, res) => {
-      try {
-        if (req.method === 'GET') return;
-
-        const { usuario, email } = extraerUsuario(req);
-
-        const modulo =
-          moduleName ||
-          (req.originalUrl.startsWith('/auth') ? 'auth' : 'unknown');
-
-        const { dispositivo, navegador } =
-          parseUserAgent(req.headers['user-agent'] || '');
-
-        setImmediate(() => {
-          Historial.create({
-            usuario,
-            email,
-            modulo,
-            metodo: req.method,
-            ruta: req.originalUrl,
-            accion: mapAction(req, proxyRes.statusCode),
-            status: proxyRes.statusCode,
-            ip: getRealIP(req),
-            dispositivo,
-            navegador,
-            recursoId: getRecursoId(req)
-          }).catch(() => {});
-        });
-
-      } catch {}
-    }
-  });
-};
-
-// =============================
 // 🔥 ENDPOINT HISTORIAL
 // =============================
 app.get('/historial', async (req, res) => {
   try {
-    const { usuario, modulo } = req.query;
+    const { usuario, modulo, pagina = 1, limite = 20 } = req.query;
 
     const filtro = {};
     if (usuario) filtro.usuario = usuario;
     if (modulo) filtro.modulo = modulo;
 
-    const logs = await Historial.find(filtro)
-      .sort({ fecha: -1 })
-      .limit(50);
+    const skip = (pagina - 1) * limite;
 
-    res.json({ ok: true, historial: logs });
+    const [total, logs] = await Promise.all([
+      Historial.countDocuments(filtro),
+      Historial.find(filtro)
+        .sort({ fecha: -1 })
+        .skip(skip)
+        .limit(parseInt(limite))
+    ]);
 
-  } catch {
-    res.status(500).json({ ok: false });
+    res.json({
+      ok: true,
+      total,
+      pagina: parseInt(pagina),
+      limite: parseInt(limite),
+      historial: logs
+    });
+
+  } catch (err) {
+    res.status(500).json({ ok: false, mensaje: 'Error obteniendo historial' });
   }
 });
 
@@ -261,61 +202,160 @@ app.post('/auth/login', async (req, res) => {
 });
 
 // =============================
-// ROUTES (SIN ROMPER)
+// 🔥 PROXY (SIN ROMPER NADA)
 // =============================
-app.use('/auth', async (req, res, next) => {
-  await wakeServiceIfNeeded(SERVICES.auth);
-  next();
-}, createSafeProxy({
-  target: SERVICES.auth,
-  changeOrigin: true,
-  pathRewrite: { '^/auth': '/' }
-}, 'auth'));
+const createSafeProxy = (config) => {
+  return createProxyMiddleware({
+    ...config,
+    proxyTimeout: 20000,
+    timeout: 20000,
 
-app.use('/roles', async (req, res, next) => {
-  await wakeServiceIfNeeded(SERVICES.auth);
-  next();
-}, createSafeProxy({
-  target: SERVICES.auth,
-  changeOrigin: true,
-  pathRewrite: { '^/roles': '/' }
-}, 'roles'));
+    onProxyRes: (proxyRes, req) => {
+      try {
+        if (req.method === 'GET') return;
 
-app.use('/usuarios', async (req, res, next) => {
-  await wakeServiceIfNeeded(SERVICES.auth);
-  next();
-}, createSafeProxy({
-  target: SERVICES.auth,
-  changeOrigin: true,
-  pathRewrite: { '^/usuarios': '/' }
-}, 'usuarios'));
+        const { usuario, email } = extraerUsuario(req);
 
-app.use('/api/upload', async (req, res, next) => {
-  await wakeServiceIfNeeded(SERVICES.upload);
-  next();
-}, createSafeProxy({
-  target: SERVICES.upload,
-  changeOrigin: true,
-  pathRewrite: (path) => '/api/upload' + path
-}));
+        const modulo =
+          req.headers['x-module'] ||
+          (req.originalUrl.startsWith('/auth') ? 'auth' : 'unknown');
 
-app.use('/bienes', async (req, res, next) => {
-  await wakeServiceIfNeeded(SERVICES.bienes);
-  next();
-}, createSafeProxy({
-  target: SERVICES.bienes,
-  changeOrigin: true,
-  pathRewrite: (path) => '/api' + path
-}));
+        const { dispositivo, navegador } =
+          parseUserAgent(req.headers['user-agent'] || '');
 
-app.use('/importador', async (req, res, next) => {
-  await wakeServiceIfNeeded(SERVICES.importador);
-  next();
-}, createSafeProxy({
-  target: SERVICES.importador + '/importar',
-  changeOrigin: true,
-  pathRewrite: { '^/importador': '' }
-}, 'importador'));
+        setImmediate(() => {
+          Historial.create({
+            usuario,
+            email,
+            modulo,
+            metodo: req.method,
+            ruta: req.originalUrl,
+            accion: mapAction(req, proxyRes.statusCode),
+            status: proxyRes.statusCode,
+            ip: getRealIP(req),
+            dispositivo,
+            navegador,
+            recursoId: getRecursoId(req)
+          }).catch(() => {});
+        });
+
+      } catch {}
+    },
+
+    onError: config.onError
+  });
+};
+
+// =============================
+// AUTH
+// =============================
+app.use('/auth',
+  async (req, res, next) => {
+    await wakeServiceIfNeeded(SERVICES.auth);
+    next();
+  },
+  createSafeProxy({
+    target: SERVICES.auth,
+    changeOrigin: true,
+    pathRewrite: { '^/auth': '/' }
+  })
+);
+
+// =============================
+// ROLES
+// =============================
+app.use('/roles',
+  async (req, res, next) => {
+    req.headers['x-module'] = 'roles';
+    await wakeServiceIfNeeded(SERVICES.auth);
+    next();
+  },
+  createSafeProxy({
+    target: SERVICES.auth,
+    changeOrigin: true,
+    pathRewrite: { '^/roles': '/' }
+  })
+);
+
+// =============================
+// USUARIOS (NO TOCAR)
+// =============================
+app.use('/usuarios',
+  async (req, res, next) => {
+    req.headers['x-module'] = 'usuarios';
+    await wakeServiceIfNeeded(SERVICES.auth);
+    next();
+  },
+  createSafeProxy({
+    target: SERVICES.auth,
+    changeOrigin: true,
+    pathRewrite: { '^/usuarios': '/' },
+
+    onProxyReq: (proxyReq, req) => {
+      proxyReq.setHeader('x-module', 'usuarios');
+
+      if (req.headers.authorization) {
+        proxyReq.setHeader('Authorization', req.headers.authorization);
+      }
+
+      if (req.body && Object.keys(req.body).length) {
+        const bodyData = JSON.stringify(req.body);
+
+        proxyReq.setHeader('Content-Type', 'application/json');
+        proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
+
+        proxyReq.write(bodyData);
+      }
+    }
+  })
+);
+
+// =============================
+// UPLOAD
+// =============================
+app.use('/api/upload',
+  async (req, res, next) => {
+    await wakeServiceIfNeeded(SERVICES.upload);
+    next();
+  },
+  createSafeProxy({
+    target: SERVICES.upload,
+    changeOrigin: true,
+    pathRewrite: (path) => '/api/upload' + path
+  })
+);
+
+// =============================
+// BIENES (SIN CAMBIOS)
+// =============================
+app.use('/bienes',
+  async (req, res, next) => {
+    await wakeServiceIfNeeded(SERVICES.bienes);
+    next();
+  },
+  createProxyMiddleware({
+    target: SERVICES.bienes,
+    changeOrigin: true,
+    pathRewrite: (path) => '/api' + path,
+    proxyTimeout: 20000,
+    timeout: 20000
+  })
+);
+
+// =============================
+// IMPORTADOR
+// =============================
+app.use('/importador',
+  async (req, res, next) => {
+    await wakeServiceIfNeeded(SERVICES.importador);
+    next();
+  },
+  createSafeProxy({
+    target: SERVICES.importador + '/importar',
+    changeOrigin: true,
+    pathRewrite: { '^/importador': '' }
+  })
+);
 
 // =============================
 app.get('/health', (req, res) => {
