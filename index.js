@@ -126,7 +126,7 @@ const SERVICES = {
 };
 
 // =============================
-// WAKE-UP INTELIGENTE
+// WAKE-UP
 // =============================
 const wakeServiceIfNeeded = async (baseUrl) => {
   try {
@@ -303,7 +303,7 @@ app.use('/roles',
 );
 
 // =============================
-// USUARIOS (NO TOCAR)
+// USUARIOS
 // =============================
 app.use('/usuarios',
   async (req, res, next) => {
@@ -334,17 +334,34 @@ app.use('/usuarios',
 );
 
 // =============================
-// BIENES
+// BIENES (YA CON HISTORIAL)
 // =============================
 app.use('/bienes',
   async (req, res, next) => {
+    req.headers['x-module'] = 'bienes';
     await wakeServiceIfNeeded(SERVICES.bienes);
     next();
   },
-  createProxyMiddleware({
+  createSafeProxy({
     target: SERVICES.bienes,
     changeOrigin: true,
     pathRewrite: (path) => '/api' + path
+  })
+);
+
+// =============================
+// IMPORTADOR (SI LO USAS)
+// =============================
+app.use('/importador',
+  async (req, res, next) => {
+    req.headers['x-module'] = 'importador';
+    await wakeServiceIfNeeded(SERVICES.importador);
+    next();
+  },
+  createSafeProxy({
+    target: SERVICES.importador + '/importar',
+    changeOrigin: true,
+    pathRewrite: { '^/importador': '' }
   })
 );
 
