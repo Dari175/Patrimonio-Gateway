@@ -56,6 +56,7 @@ function extraerUsuario(req) {
   }
 
   const authHeader = req.headers.authorization;
+
   if (!authHeader?.startsWith('Bearer ')) {
     return { usuario: null, email: null };
   }
@@ -63,7 +64,7 @@ function extraerUsuario(req) {
   try {
     const decoded = jwt.decode(authHeader.split(' ')[1]);
     return {
-      usuario: decoded?.sub || null,
+      usuario: decoded?.sub || decoded?.id || null,
       email: decoded?.email || null
     };
   } catch {
@@ -76,6 +77,8 @@ function mapAction(req, status) {
     return status === 200 ? 'LOGIN_SUCCESS' : 'LOGIN_FAIL';
   }
 
+  if (req.originalUrl.includes('/logout')) return 'LOGOUT';
+
   switch (req.method) {
     case 'POST': return 'CREAR';
     case 'PUT':
@@ -86,18 +89,25 @@ function mapAction(req, status) {
 }
 
 function getRealIP(req) {
-  return req.headers['x-forwarded-for']?.split(',')[0] || req.ip;
+  return (
+    req.headers['x-forwarded-for']?.split(',')[0] ||
+    req.socket?.remoteAddress ||
+    req.ip
+  );
 }
 
 function parseUserAgent(ua = '') {
   ua = ua.toLowerCase();
 
-  return {
-    dispositivo: ua.includes('mobile') ? 'MOBILE' : 'DESKTOP',
-    navegador: ua.includes('chrome') ? 'CHROME' :
-               ua.includes('firefox') ? 'FIREFOX' :
-               ua.includes('safari') ? 'SAFARI' : 'OTRO'
-  };
+  let dispositivo = ua.includes('mobile') ? 'MOBILE' : 'DESKTOP';
+
+  let navegador = 'OTRO';
+  if (ua.includes('chrome')) navegador = 'CHROME';
+  else if (ua.includes('firefox')) navegador = 'FIREFOX';
+  else if (ua.includes('safari')) navegador = 'SAFARI';
+  else if (ua.includes('edge')) navegador = 'EDGE';
+
+  return { dispositivo, navegador };
 }
 
 function getRecursoId(req) {
@@ -106,7 +116,7 @@ function getRecursoId(req) {
 }
 
 // =============================
-// CONFIG
+// CONFIGURACION GLOBAL
 // =============================
 const SERVICES = {
   auth: 'https://patrimonio-apiservice-auth.onrender.com',
@@ -116,12 +126,14 @@ const SERVICES = {
 };
 
 // =============================
+// WAKE-UP INTELIGENTE
+// =============================
 const wakeServiceIfNeeded = async (baseUrl) => {
   try {
     await fetch(baseUrl + '/health');
   } catch {
     await fetch(baseUrl + '/health').catch(() => null);
-    await new Promise(r => setTimeout(r, 4000));
+    await new Promise(resolve => setTimeout(resolve, 4000));
     await fetch(baseUrl + '/health').catch(() => null);
   }
 };
@@ -143,13 +155,14 @@ app.get('/historial', async (req, res) => {
 
     res.json({ ok: true, historial: logs });
 
-  } catch {
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ ok: false });
   }
 });
 
 // =============================
-// LOGIN
+// LOGIN MANUAL
 // =============================
 app.post('/auth/login', express.json(), async (req, res) => {
   try {
@@ -178,18 +191,26 @@ const createSafeProxy = (config) => {
     proxyTimeout: 20000,
     timeout: 20000,
 
-    onProxyRes: (proxyRes, req) => {
+    onProxyRes: (proxyRes, req, res) => {
       try {
         if (req.method === 'GET') return;
 
+        console.log('📌 Guardando historial:', req.originalUrl);
+
         const { usuario, email } = extraerUsuario(req);
-        const { dispositivo, navegador } = parseUserAgent(req.headers['user-agent'] || '');
+
+        const modulo =
+          req.headers['x-module'] ||
+          (req.originalUrl.startsWith('/auth') ? 'auth' : 'unknown');
+
+        const { dispositivo, navegador } =
+          parseUserAgent(req.headers['user-agent'] || '');
 
         setImmediate(() => {
           Historial.create({
             usuario,
             email,
-            modulo: req.headers['x-module'] || 'unknown',
+            modulo,
             metodo: req.method,
             ruta: req.originalUrl,
             accion: mapAction(req, proxyRes.statusCode),
@@ -198,26 +219,40 @@ const createSafeProxy = (config) => {
             dispositivo,
             navegador,
             recursoId: getRecursoId(req)
-          }).catch(() => {});
+          }).then(() => {
+            console.log('✅ Historial guardado');
+          }).catch(err => {
+            console.log('❌ Error historial:', err.message);
+          });
         });
 
-      } catch {}
+      } catch (err) {
+        console.log('❌ Error en historial:', err.message);
+      }
     },
 
     onError: async (err, req, res) => {
       if (res.headersSent) return;
 
       if (req.method === 'GET') {
-        return res.status(502).json({ error: 'Servicio no disponible' });
+        return res.status(502).json({
+          error: 'Servicio temporalmente no disponible'
+        });
       }
 
       try {
         const target = config.target;
+
         await wakeServiceIfNeeded(target);
 
         const retryRes = await fetch(target + req.url, {
           method: req.method,
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(req.headers.authorization && {
+              Authorization: req.headers.authorization
+            })
+          },
           body: ['GET', 'HEAD'].includes(req.method)
             ? undefined
             : JSON.stringify(req.body)
@@ -227,25 +262,31 @@ const createSafeProxy = (config) => {
         res.status(retryRes.status).send(data);
 
       } catch {
-        res.status(502).json({ error: 'Servicio no disponible' });
+        res.status(502).json({
+          error: 'Servicio temporalmente no disponible'
+        });
       }
     }
   });
 };
 
 // =============================
-// ROUTES (INTACTOS)
+// AUTH
 // =============================
-
 app.use('/auth', async (req, res, next) => {
   await wakeServiceIfNeeded(SERVICES.auth);
   next();
-}, createSafeProxy({
+});
+
+app.use('/auth', createSafeProxy({
   target: SERVICES.auth,
   changeOrigin: true,
   pathRewrite: { '^/auth': '/' }
 }));
 
+// =============================
+// ROLES
+// =============================
 app.use('/roles',
   async (req, res, next) => {
     req.headers['x-module'] = 'roles';
@@ -259,6 +300,9 @@ app.use('/roles',
   })
 );
 
+// =============================
+// USUARIOS (NO TOCAR)
+// =============================
 app.use('/usuarios',
   async (req, res, next) => {
     req.headers['x-module'] = 'usuarios';
@@ -287,6 +331,9 @@ app.use('/usuarios',
   })
 );
 
+// =============================
+// BIENES
+// =============================
 app.use('/bienes',
   async (req, res, next) => {
     await wakeServiceIfNeeded(SERVICES.bienes);
@@ -296,18 +343,6 @@ app.use('/bienes',
     target: SERVICES.bienes,
     changeOrigin: true,
     pathRewrite: (path) => '/api' + path
-  })
-);
-
-app.use('/importador',
-  async (req, res, next) => {
-    await wakeServiceIfNeeded(SERVICES.importador);
-    next();
-  },
-  createSafeProxy({
-    target: SERVICES.importador + '/importar',
-    changeOrigin: true,
-    pathRewrite: { '^/importador': '' }
   })
 );
 
