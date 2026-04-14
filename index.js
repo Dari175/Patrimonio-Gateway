@@ -64,7 +64,7 @@ function extraerUsuario(req) {
   try {
     const decoded = jwt.decode(authHeader.split(' ')[1]);
     return {
-      usuario: decoded?.sub || decoded?.id || null,
+      usuario: decoded?.sub || decoded?.id || decoded?._id || null,
       email: decoded?.email || null
     };
   } catch {
@@ -191,43 +191,45 @@ const createSafeProxy = (config) => {
     proxyTimeout: 20000,
     timeout: 20000,
 
-    onProxyRes: (proxyRes, req, res) => {
-      try {
-        if (req.method === 'GET') return;
+    on: {
+      proxyRes: (proxyRes, req, res) => {
+        try {
+          if (req.method === 'GET') return;
 
-        console.log('📌 Guardando historial:', req.originalUrl);
+          console.log('📌 Guardando historial:', req.originalUrl);
 
-        const { usuario, email } = extraerUsuario(req);
+          const { usuario, email } = extraerUsuario(req);
 
-        const modulo =
-          req.headers['x-module'] ||
-          (req.originalUrl.startsWith('/auth') ? 'auth' : 'unknown');
+          const modulo =
+            req.headers['x-module'] ||
+            (req.originalUrl.startsWith('/auth') ? 'auth' : 'unknown');
 
-        const { dispositivo, navegador } =
-          parseUserAgent(req.headers['user-agent'] || '');
+          const { dispositivo, navegador } =
+            parseUserAgent(req.headers['user-agent'] || '');
 
-        setImmediate(() => {
-          Historial.create({
-            usuario,
-            email,
-            modulo,
-            metodo: req.method,
-            ruta: req.originalUrl,
-            accion: mapAction(req, proxyRes.statusCode),
-            status: proxyRes.statusCode,
-            ip: getRealIP(req),
-            dispositivo,
-            navegador,
-            recursoId: getRecursoId(req)
-          }).then(() => {
-            console.log('✅ Historial guardado');
-          }).catch(err => {
-            console.log('❌ Error historial:', err.message);
+          setImmediate(() => {
+            Historial.create({
+              usuario,
+              email,
+              modulo,
+              metodo: req.method,
+              ruta: req.originalUrl,
+              accion: mapAction(req, proxyRes.statusCode),
+              status: proxyRes.statusCode,
+              ip: getRealIP(req),
+              dispositivo,
+              navegador,
+              recursoId: getRecursoId(req)
+            }).then(() => {
+              console.log('✅ Historial guardado');
+            }).catch(err => {
+              console.log('❌ Error historial:', err.message);
+            });
           });
-        });
 
-      } catch (err) {
-        console.log('❌ Error en historial:', err.message);
+        } catch (err) {
+          console.log('❌ Error en historial:', err.message);
+        }
       }
     },
 
