@@ -3,6 +3,7 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
+const { fixRequestBody } = require('http-proxy-middleware');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,7 +12,8 @@ app.use(express.json());
 // 🔥 MONGO
 // =============================
 mongoose.connect(
-'mongodb+srv://patrimonioatotonilcoti_db_user:Patrimonio!123@cluster0.01itri5.mongodb.net/PatrimonioDB?appName=Cluster0'
+  'mongodb://patrimonioatotonilcoti_db_user:Patrimonio!123@ac-h9kaova-shard-00-00.01itri5.mongodb.net:27017,ac-h9kaova-shard-00-01.01itri5.mongodb.net:27017,ac-h9kaova-shard-00-02.01itri5.mongodb.net:27017/PatrimonioDB?ssl=true&replicaSet=atlas-ck056c-shard-0&authSource=admin&appName=Cluster0'
+//'mongodb+srv://patrimonioatotonilcoti_db_user:Patrimonio!123@cluster0.01itri5.mongodb.net/PatrimonioDB?appName=Cluster0'
 ).then(() => {
   console.log('✅ Mongo conectado (historial)');
 }).catch(err => {
@@ -121,13 +123,17 @@ function getRecursoId(req) {
 const SERVICES = {
   auth: 'https://patrimonio-apiservice-auth.onrender.com',
   upload: 'https://patrimonio-loadimages.onrender.com',
-  bienes: 'https://bienes-service-nldc.onrender.com',
+  // produccion: 'https://patrimonio-apiservice.onrender.com',
+ bienes: 'https://bienes-service-nldc.onrender.com',
+  //local: 'http://localhost:3001',
+  //bienes: 'http://localhost:3001',
   importador: 'https://patrimonio-importexeldb.onrender.com'
 };
 
 // =============================
 // WAKE-UP
 // =============================
+
 const wakeServiceIfNeeded = async (baseUrl) => {
   try {
     await fetch(baseUrl + '/health');
@@ -192,11 +198,26 @@ const createSafeProxy = (config) => {
     timeout: 20000,
 
     on: {
+      proxyReq: (proxyReq, req) => {
+        if (req.headers.authorization) {
+          proxyReq.setHeader('Authorization', req.headers.authorization);
+        }
+
+        if (
+          req.body &&
+          Object.keys(req.body).length &&
+          ['POST', 'PUT', 'PATCH'].includes(req.method)
+        ) {
+          const bodyData = JSON.stringify(req.body);
+          proxyReq.setHeader('Content-Type', 'application/json');
+          proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
+          proxyReq.write(bodyData);
+        }
+      },
+
       proxyRes: (proxyRes, req, res) => {
         try {
           if (req.method === 'GET') return;
-
-          console.log('📌 Guardando historial:', req.originalUrl);
 
           const { usuario, email } = extraerUsuario(req);
 
@@ -220,53 +241,12 @@ const createSafeProxy = (config) => {
               dispositivo,
               navegador,
               recursoId: getRecursoId(req)
-            }).then(() => {
-              console.log('✅ Historial guardado');
-            }).catch(err => {
-              console.log('❌ Error historial:', err.message);
             });
           });
 
         } catch (err) {
           console.log('❌ Error en historial:', err.message);
         }
-      }
-    },
-
-    onError: async (err, req, res) => {
-      if (res.headersSent) return;
-
-      if (req.method === 'GET') {
-        return res.status(502).json({
-          error: 'Servicio temporalmente no disponible'
-        });
-      }
-
-      try {
-        const target = config.target;
-
-        await wakeServiceIfNeeded(target);
-
-        const retryRes = await fetch(target + req.url, {
-          method: req.method,
-          headers: {
-            'Content-Type': 'application/json',
-            ...(req.headers.authorization && {
-              Authorization: req.headers.authorization
-            })
-          },
-          body: ['GET', 'HEAD'].includes(req.method)
-            ? undefined
-            : JSON.stringify(req.body)
-        });
-
-        const data = await retryRes.text();
-        res.status(retryRes.status).send(data);
-
-      } catch {
-        res.status(502).json({
-          error: 'Servicio temporalmente no disponible'
-        });
       }
     }
   });
@@ -342,25 +322,21 @@ app.use('/bienes',
     await wakeServiceIfNeeded(SERVICES.bienes);
     next();
   },
-  createSafeProxy({
-    target: SERVICES.bienes,
-    changeOrigin: true,
-    pathRewrite: (path) => '/api' + path,
+createSafeProxy({
+  target: SERVICES.bienes,
+  changeOrigin: true,
+  pathRewrite: (path) => '/api' + path,
 
-    onProxyReq: (proxyReq, req) => {
-      if (req.headers.authorization) {
-        proxyReq.setHeader('Authorization', req.headers.authorization);
-      }
-
-      if (req.body && Object.keys(req.body).length) {
-        const bodyData = JSON.stringify(req.body);
-        proxyReq.setHeader('Content-Type', 'application/json');
-        proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
-        proxyReq.write(bodyData);
-      }
+ on: {
+  proxyReq: (proxyReq, req) => {
+    if (req.headers.authorization) {
+      proxyReq.setHeader('Authorization', req.headers.authorization);
     }
-  })
-);
+
+    fixRequestBody(proxyReq, req);
+  }
+}
+}));
 
 // =============================
 // IMPORTADOR (SI LO USAS)
