@@ -6,7 +6,7 @@ const mongoose = require('mongoose');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
+app.use(express.json());
 // =============================
 // 🔥 MONGO
 // =============================
@@ -345,7 +345,20 @@ app.use('/bienes',
   createSafeProxy({
     target: SERVICES.bienes,
     changeOrigin: true,
-    pathRewrite: (path) => '/api' + path
+    pathRewrite: (path) => '/api' + path,
+
+    onProxyReq: (proxyReq, req) => {
+      if (req.headers.authorization) {
+        proxyReq.setHeader('Authorization', req.headers.authorization);
+      }
+
+      if (req.body && Object.keys(req.body).length) {
+        const bodyData = JSON.stringify(req.body);
+        proxyReq.setHeader('Content-Type', 'application/json');
+        proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
+        proxyReq.write(bodyData);
+      }
+    }
   })
 );
 
