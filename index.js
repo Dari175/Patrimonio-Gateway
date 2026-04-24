@@ -124,7 +124,7 @@ const SERVICES = {
   auth: 'https://patrimonio-apiservice-auth.onrender.com',
   upload: 'https://patrimonio-loadimages.onrender.com',
   // produccion: 'https://patrimonio-apiservice.onrender.com',
- bienes: 'https://bienes-service-nldc.onrender.com',
+  bienes: 'https://bienes-service-nldc.onrender.com',
   //local: 'http://localhost:3001',
   //bienes: 'http://localhost:3001',
   importador: 'https://patrimonio-importexeldb.onrender.com'
@@ -351,6 +351,34 @@ app.use('/importador',
     target: SERVICES.importador + '/importar',
     changeOrigin: true,
     pathRewrite: { '^/importador': '' }
+  })
+);
+
+// =============================
+// UPLOAD SERVICE (RESTAURADO)
+// =============================
+app.use('/api/upload',
+  async (req, res, next) => {
+    req.headers['x-module'] = 'upload';
+    await wakeServiceIfNeeded(SERVICES.upload);
+    next();
+  },
+  createSafeProxy({
+    target: SERVICES.upload,
+    changeOrigin: true,
+
+    // 🔥 IMPORTANTE: mantener path
+    pathRewrite: (path) => path,
+
+    on: {
+      proxyReq: (proxyReq, req) => {
+        proxyReq.setHeader('ngrok-skip-browser-warning', 'true');
+
+        if (req.headers.authorization) {
+          proxyReq.setHeader('Authorization', req.headers.authorization);
+        }
+      }
+    }
   })
 );
 
