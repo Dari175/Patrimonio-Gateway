@@ -368,7 +368,7 @@ app.use('/api/upload',
     changeOrigin: true,
 
     // 🔥 IMPORTANTE: mantener path
-    pathRewrite: (path) => path,
+    pathRewrite: (path) => '/api/upload' + path,
 
     on: {
       proxyReq: (proxyReq, req) => {
